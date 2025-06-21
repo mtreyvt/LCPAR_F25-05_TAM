@@ -115,6 +115,14 @@ def show_menu(choices):                                       #
             selection = 0                                     #
     return selection                                          #
 #------------------------------------------------------------------------------
+def compute_far_field(freq, diameter):
+    c = 2.99792458e8
+    wavelength = c/freq
+    r = (2 * diameter**2) / wavelength
+    return r
+
+#------------------------------------------------------------------------------
 if __name__ == "__main__":                                    #
     main()                                                    # EoF
+
 
