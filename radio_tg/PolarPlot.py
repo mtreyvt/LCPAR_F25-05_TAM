@@ -1,4 +1,4 @@
-import matplotlib.plyplot as plt
+import matplotlib.pyplot as plt
 import numpy as np
 
 def plot_patterns(deg: np.ndarray,
