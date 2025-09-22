@@ -1,3 +1,6 @@
+import matplotlib.plyplot as plt
+import numpy as np
+
 def plot_patterns(deg: np.ndarray,
                   traces: list[tuple[str, np.ndarray]],
                   title: str = "Radiation Pattern: Anechoic vs Time-Gated",
