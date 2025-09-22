@@ -168,9 +168,9 @@ def wavelet_denoise_circ(x_db: np.ndarray,
     Circular-padding + (optional) cycle-spinning wavelet denoise.
     """
     if not _HAS_PYWT:
-        return np.asarray(x_db, dtype=float).copy()
+        return np.asarray(x_db, dtype=np.complex128).copy()
 
-    x = np.asarray(x_db, dtype=float).ravel()
+    x = np.asarray(x_db,dtype=np.complex128).ravel()
     xpad = np.concatenate([x[-pad:], x, x[:pad]]) if pad > 0 else x.copy()
 
     if domain.lower() == 'linear':
@@ -244,7 +244,7 @@ def format_data(data, num_freqs):
 def synthetic_pulse(frequencies, duration):
     #Old code returned per-frequency qeights
     #instead we FFT time-window of a duration of time at the specific frequency 
-    freqs = _np.asarray(frequencies, dtype=float)
+    freqs = _np.asarray(frequencies, dtype=np.complex128)
     Nf = len(freqs)
     Nfft = next_pow2(max(1024, 4*Nf))
     # pick a workable fs from the grid (robust fallback if spacing is uneven)
@@ -268,7 +268,7 @@ def synthetic_output(pulse, data, num_freqs):
     if A.ndim == 1:
         A = format_data(A, num_freqs)
     A = A.astype(_np.complex128, copy=False)
-    w = _np.asarray(pulse, dtype=float).reshape(1, -1)
+    w = _np.asarray(pulse,dtype=np.complex128).reshape(1, -1)
     if A.shape[1] != w.shape[1]:
         raise ValueError(f"Frequency dimension mismatch: data has {A.shape[1]}, pulse has {w.shape[1]}")
     return A * w
