@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from __future__ import annotations
+from typing import Optional
 
 def plot_patterns(deg: np.ndarray,
                   traces: list[tuple[str, np.ndarray]],
