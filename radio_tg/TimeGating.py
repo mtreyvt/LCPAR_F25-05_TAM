@@ -227,11 +227,13 @@ def wavelet_denoise_circ(x_db: np.ndarray,
 #integration of new time-gating functions
 
 def print_and_return_data(data):
-    try: 
-        _plt.figure(); _plt.plot(_np.asarray(data).real);_plt.title("Raw data"); _plt.grid(True); _plt.show()
-    except Excpetion:
-        pass
+    arr = np.asarray(data)
+    if np.iscomplexobj(arr):
+        arr = np.abs(arr)
+    plt.plot(arr)
+    plt.show()
     return data
+
 
 def format_data(data, num_freqs):
     a = _np.asarray(data)
