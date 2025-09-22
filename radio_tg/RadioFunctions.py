@@ -32,6 +32,7 @@ import RxRadio
 import TxRadio
 import TimeGating
 from MotorController import MotorController
+from PolarPlot import plot_polar_patterns, plot_patterns
 import matplotlib.pyplot as plt
 import time
 #------------------------------------------------------------------------------
@@ -515,6 +516,19 @@ def do_AMTGscan(params):
     plt.plot(data[:,1])
     plt.title('FFT result')
     plt.show() 
+    #polar plotting setup
+    #take the data and put it into dB(gated_dB)
+    #arrange our angles into the plot (deg)
+    #plot the data 
+    gated_db = _tg_data_to_dB(TGantenna_data, pick = "max")
+    deg = np.arange(int(params["mast_start_angle"]),
+                    int(params["mast_end_angle"]),1,dtype = float)
+    plot_polar_patterns(
+        deg,
+        traces = [("Time_Gated",gated_dB)],
+        rmin = -60.0, rmax = 0.0, rticks = (-60,-40,-20,0),
+        title = "Radiation Pattern (Time-Gated-Polar)"
+    )
     
     plt.plot(TGantenna_data)
     plt.show()
@@ -671,4 +685,18 @@ def PlotFiles():
         ax2.set_rticks([-20,-16,-12,-8,-4,0]);
     plt.legend(loc="lower center", bbox_to_anchor=(1, 1))
     plt.show()
+
+def _tg_data_to_dB (td: np.ndarray, pick: str = "max",idx: int | None = None) ->np.ndarray:
+    import numpy as np
+    mag = np.abs(td)
+    if pick == "center":
+        if idx is None: 
+            idx = mag.shape[1]//2
+            y = mag[:,idx]
+    else: 
+        y = mag.max(axis=1)
+    y = y/(np.max(y) if np.max(y) > 0 else 1.0)
+    return 20.0 * np.log10(np.clip(y, 1e-12, None))
+    
 #--------------------------------------------------------------------------EoF
+
