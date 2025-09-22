@@ -3,6 +3,7 @@ def plot_patterns(deg: np.ndarray,
                   title: str = "Radiation Pattern: Anechoic vs Time-Gated",
                   save_path: Optional[str] = None) -> None:
     import matplotlib.pyplot as plt  # local import to keep base deps light
+    import numpy as np
 
     plt.figure(figsize=(9, 5))
     for label, y in traces:
