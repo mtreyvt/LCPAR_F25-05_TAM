@@ -38,7 +38,7 @@ def main():
     menu_choices.append("Time Gate Measure AUT w/ coherent AM method")     # 9
     menu_choices.append("Time Gate FastScan AUT w/ coherent AM method")    # 10
     menu_choices.append("Capture single Time Gate  measurement")           # 11
-    menu.choices.append("Single Frequency Time Gate Scan")                 # 12
+    menu_choices.append("Single Frequency Time Gate Scan")                 # 12
     menu_choices.append("Quit")                                            # 13
     #
     while not quit:
