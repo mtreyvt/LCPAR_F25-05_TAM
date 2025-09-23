@@ -408,114 +408,84 @@ def do_AMTGmeas(params):
 
 #===============================================================================
 def do_AMTGscan(params):
-    import TimeGating
-    from PolarPlot import plot_polar_patterns
-
+    """
+    Angle scan across a *frequency sweep*, then time-gate to remove reflections.
+    Produces a polar plot and writes a *_TG.csv file with the gated linear magnitudes.
+    """
     motor_controller = InitMotor(params)
-    datafile = OpenDatafile(params)
-    AMantenna_data = []
+    datafile = OpenDatafile(params)  # raw capture file (complex per angle written below)
 
-    # freq list (round + dedupe)
+    # --- build freq list (rounded & deduped) ---
     freq_lin = np.linspace(float(params["lower_frequency"]),
                            float(params["upper_frequency"]),
                            int(params["freq_steps"]), dtype=float)
-    freq_rounded = np.array([round_sig(v, 3) for v in freq_lin], dtype=float)
-    freq_list = np.unique(freq_rounded)
-    Nf = int(len(freq_list))
+    freq_list = np.unique(np.array([round_sig(v, 3) for v in freq_lin], dtype=float))
+    Nf = int(freq_list.size)
+    if Nf < 2:
+        print("WARNING: time gating needs multiple frequencies. Increase freq_steps or span.")
+    print(f"Using {Nf} frequency points.")
 
-    # angle grid from steps
-    Nangles = int(params["mast_steps"])
+    # --- angle grid ---
     mast_start = float(params["mast_start_angle"])
     mast_end   = float(params["mast_end_angle"])
-    mast_angles = np.linspace(mast_start, mast_end, Nangles, endpoint=False, dtype=float)
+    mast_steps = int(params["mast_steps"])
+    mast_angles = np.linspace(mast_start, mast_end, mast_steps, endpoint=False, dtype=float)
 
-    arm_fixed = float(params.get("arm_fixed_angle", params["arm_start_angle"]))
+    # storage: complex response per angle per freq
+    responses = np.zeros((mast_steps, Nf), dtype=np.complex128)
 
-    for freq in freq_list:
+    # --- sweep ---
+    for fi, freq in enumerate(freq_list):
         rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq, params["rx_freq_offset"])
         tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])
 
         tx.start()
-        time.sleep(3)
+        time.sleep(3)  # TX latency
 
-        print("Moving to start angle")
-        motor_controller.rotate_mast(mast_start)
+        print(f"[{fi+1}/{Nf}] freq={freq/1e6:.3f} MHz: rotating & collecting …")
+        per_angle = _collect_complex_per_angle(rx, mast_start, mast_end, mast_steps, motor_controller)
+        responses[:, fi] = per_angle
 
-        print("Collecting data while moving to end angle")
-        rx.start()
-        motor_controller.rotate_mast(mast_end)
-        rx.stop(); rx.wait()
         tx.stop(); tx.wait()
-
-        # Fetch I/Q and build complex samples
-        I = np.array(rx.vector_sink_0.data(), dtype=float)
-        Q = np.array(rx.vector_sink_1.data(), dtype=float)
-        L = min(I.size, Q.size)
-        samps = np.zeros(1, dtype=np.complex128) if L == 0 else (I[:L] + 1j * Q[:L])
-
-        # Bin samples by angle (coherent mean per angle)
-        binsize = max(1, L // Nangles)
-        complex_per_angle = np.zeros(Nangles, dtype=np.complex128)
-        mag_per_angle     = np.zeros(Nangles, dtype=float)
-
-        for i in range(Nangles):
-            s = i * binsize
-            e = min((i + 1) * binsize, L)
-            seg = samps[s:e] if e > s else np.zeros(1, dtype=np.complex128)
-            cmean = seg.mean()
-            complex_per_angle[i] = cmean
-            mag_per_angle[i] = float(np.sqrt(np.mean(np.abs(seg) ** 2))) if seg.size else 0.0
-
-        # Write results (once per freq)
-        for angle_deg, cval, mag in zip(mast_angles, complex_per_angle, mag_per_angle):
-            datafile.write(f"{angle_deg},{arm_fixed},0.0,{cval.real},{cval.imag}\n")
-            AMantenna_data.append((angle_deg, arm_fixed, 0.0, mag, cval))
-
-        print("Finished collection, return to 0")
         motor_controller.rotate_mast(0)
 
-    # ----- Time gating post (once after all freqs) -----
-    duration = float(params.get("tg_duration_s", 25e-9))
-    pulses = TimeGating.synthetic_pulse(freq_list, duration)   # len == Nf
-    TGdata = np.array(AMantenna_data, dtype=object)            # (angle, arm, bkg, mag, complex)
-    TGavg = TimeGating.format_data(TGdata[:,4],Nf).T         # [Nangles, Nf]
+        # also log *complex* mean per angle (raw) to the open file
+        for ang, cval in zip(mast_angles, per_angle):
+            datafile.write(f"{ang:.1f},0.0,0.0,{cval.real:.8e},{cval.imag:.8e}\n")
 
-    Nf_from_data = TGavg.shape[1]
-    if pulses.size != Nf_from_data:
-        x_old = np.linspace(0.0,1.0,pulses.size)
-        x_new = np.linspace(0.0,1.0,Nf_from_data)
-        pulses = np.interp(x_new,x_old,pulses) if pulses.size >1 else np.full(Nf_from_data, float(pulses.ravel()[0]))
-        
+    datafile.close()
+    print("raw datafile closed")
 
-    TGweighted = TimeGating.synthetic_output(pulses, TGavg, Nf_from_data)
-    TGtd = TimeGating.to_time_domain(TGweighted, Nf_from_data)
+    # --- time gating ---
+    gate_width = float(params.get("tg_duration_s", 25e-9))
+    print(f"Applying time gating with width {gate_width*1e9:.1f} ns …")
+    gated_db = TimeGating.apply_time_gating_matrix(responses, freq_list, gate_width_s=gate_width,
+                                                   pick='dc', denoise_wavelet=True)
 
-
-    # Reduce time dimension → one dB value per angle
-    def _tg_time_to_db_per_angle(td: np.ndarray, pick: str = "max", idx: int | None = None) -> np.ndarray:
-        mag = np.abs(td)
-        if pick == "center":
-            if idx is None:
-                idx = mag.shape[1] // 2
-            y = mag[:, idx]
-        else:
-            y = mag.max(axis=1)
-        y = y / (y.max() if y.size else 1.0)
-        return 20.0 * np.log10(np.clip(y, 1e-12, None))
-
-    gated_db = _tg_time_to_db_per_angle(TGtd, pick="max")
+    # --- plot polar + cartesian (optional) ---
     deg = mast_angles
-
     plot_polar_patterns(
         deg,
         traces=[("Time-Gated", gated_db)],
         rmin=-60.0, rmax=0.0, rticks=(-60, -40, -20, 0),
-        title="Radiation Pattern (time-gated-polar)"
+        title="Radiation Pattern (Time-Gated, Polar)"
     )
+    # cartesian overlay (nice for sanity)
+    try:
+        plot_patterns(deg, traces=[("Time-Gated", gated_db)], title="Radiation Pattern (Time-Gated)")
+    except Exception:
+        pass
 
-    datafile.close()
-    print("datafile closed")
-    return AMantenna_data
+    # --- write gated results (linear magnitude, normalized) ---
+    y_lin = 10.0 ** (gated_db / 20.0)
+    outname = time.strftime("%d-%b-%Y_%H-%M-%S") + "_TG.csv"
+    with open(outname, "w") as fp:
+        fp.write("Angle,Arm,Background,GatedMag\n")
+        for a, v in zip(deg, y_lin):
+            fp.write(f"{a:.1f},0.0,0.0,{v:.8e}\n")
+    print(f"wrote gated results → {outname}")
+
+    return list(zip(deg.tolist(), [0.0]*len(deg), [0.0]*len(deg), y_lin.tolist()))
 
         
 #==============================================================================
@@ -665,6 +635,9 @@ def PlotFiles():
     plt.legend(loc="lower center", bbox_to_anchor=(1, 1))
     plt.show()
 
+
+
+#helper functions
 def _tg_data_to_dB(td: np.ndarray, pick: str = "max", idx: int | None = None) -> np.ndarray:
     mag = np.abs(td)
     if pick == "center":
@@ -676,13 +649,46 @@ def _tg_data_to_dB(td: np.ndarray, pick: str = "max", idx: int | None = None) ->
     y = y/ (np.max(y) if np.max(y)>0 else 1.0)
     return 20.0*np.log10(np.clip(y,1e-12, None))
 
-def round_sig(x:float, sig: int = 3) -> float: 
-    if not np.isfinite(x):
-        return x
-    if x == 0.0:
-        return 0.0
-    ndigits = int(sig - 1 - math.floor(math.log10(abs(x))))
+
+def round_sig(x: float, sig: int = 3) -> float:
+    if not np.isfinite(x) or x == 0.0:
+        return 0.0 if x == 0.0 else x
+    ndigits = int(sig - 1 - np.floor(np.log10(abs(x))))
     ndigits = max(-12, min(12, ndigits))
     return round(x, ndigits)
+
+
+
+def _collect_complex_per_angle(rx_graph,
+                               mast_start: float,
+                               mast_end: float,
+                               mast_steps: int,
+                               motor_controller) -> np.ndarray:
+    """
+    Start RX, rotate mast from start->end, stop RX.
+    Return complex mean per angle bin: shape (mast_steps,)
+    """
+    motor_controller.rotate_mast(mast_start)
+
+    rx_graph.start()
+    motor_controller.rotate_mast(mast_end)
+    rx_graph.stop(); rx_graph.wait()
+
+    I = np.array(rx_graph.vector_sink_0.data(), dtype=float)
+    Q = np.array(rx_graph.vector_sink_1.data(), dtype=float)
+    L = min(I.size, Q.size)
+    if L == 0:
+        return np.zeros(mast_steps, dtype=np.complex128)
+
+    samps = I[:L] + 1j * Q[:L]
+
+    # bin uniformly into mast_steps chunks
+    idx = np.linspace(0, L, mast_steps + 1, dtype=int)
+    out = np.zeros(mast_steps, dtype=np.complex128)
+    for i in range(mast_steps):
+        s, e = idx[i], idx[i+1]
+        seg = samps[s:e] if e > s else samps[s:s+1]
+        out[i] = seg.mean()
+    return out
 #--------------------------------------------------------------------------EoF
 
