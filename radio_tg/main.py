@@ -66,7 +66,7 @@ def main():
             	#print(data)
             elif selection == 12:
                 params = RadioFunctions.LoadParams(param_filename)
-                data = RadioFunctions._do_AMTGscan_single_freq(params, freq_hz=2.5e9)
+                data = RadioFunctions.do_AMTGscan_single_freq(params, freq_hz=2.5e9)
             elif selection == 3: 
                 params = RadioFunctions.LoadParams(param_filename)
                 data = RadioFunctions.do_NSmeas(params)
