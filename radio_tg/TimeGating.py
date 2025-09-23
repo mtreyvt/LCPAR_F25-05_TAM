@@ -236,39 +236,39 @@ def print_and_return_data(data):
 
 
 def format_data(data, num_freqs):
-    a = _np.asarray(data)
+    a = np.asarray(data)
     row_len = len(a) // int(num_freqs)
-    return _np.array([a[i:i+row_len] for i in range(0, len(a), row_len)])
+    return np.array([a[i:i+row_len] for i in range(0, len(a), row_len)])
 
 
 def synthetic_pulse(frequencies, duration):
     #Old code returned per-frequency qeights
     #instead we FFT time-window of a duration of time at the specific frequency 
-    freqs = _np.asarray(frequencies, dtype=np.complex128)
+    freqs = np.asarray(frequencies, dtype=np.complex128)
     Nf = len(freqs)
     Nfft = next_pow2(max(1024, 4*Nf))
     # pick a workable fs from the grid (robust fallback if spacing is uneven)
-    df_est = _np.median(_np.diff(_np.sort(freqs))) if Nf > 1 else 1.0
-    fs = max(2.0*_np.max(freqs), Nfft*max(df_est, 1.0))
+    df_est = np.median(np.diff(np.sort(freqs))) if Nf > 1 else 1.0
+    fs = max(2.0*np.max(freqs), Nfft*max(df_est, 1.0))
 
     gate_t = build_time_gate(fs=fs, Nfft=Nfft, t_start_s=0.0, t_end_s=float(duration),
                              window='tukey', tukey_alpha=0.5)
-    Wf = _np.fft.rfft(gate_t, n=Nfft)
-    mag = _np.abs(Wf)
+    Wf = np.fft.rfft(gate_t, n=Nfft)
+    mag = np.abs(Wf)
 
     # map requested freqs to nearest rFFT bins
     df = fs / float(Nfft)
-    k = _np.rint(_np.clip(freqs/df, 0, (Nfft//2))).astype(int)
+    k = np.rint(np.clip(freqs/df, 0, (Nfft//2))).astype(int)
     weights = mag[k]
     m = weights.max() if weights.size else 1.0
     return weights/m if m > 0 else weights
 def synthetic_output(pulse, data, num_freqs):
     """Multiply angle×freq matrix by per-frequency weights."""
-    A = _np.asarray(data)
+    A = np.asarray(data)
     if A.ndim == 1:
         A = format_data(A, num_freqs)
-    A = A.astype(_np.complex128, copy=False)
-    w = _np.asarray(pulse,dtype=np.complex128).reshape(1, -1)
+    A = A.astype(np.complex128, copy=False)
+    w = np.asarray(pulse,dtype=np.complex128).reshape(1, -1)
     if A.shape[1] != w.shape[1]:
         raise ValueError(f"Frequency dimension mismatch: data has {A.shape[1]}, pulse has {w.shape[1]}")
     return A * w
@@ -278,13 +278,13 @@ def to_time_domain(data, num_freqs):
     Legacy: IFFT along frequency axis to make time rows per angle.
     Returns angles × time matrix.
     """
-    A = _np.asarray(data)
+    A = np.asarray(data)
     if A.ndim == 1:
         A = format_data(A, num_freqs)
-    A = A.astype(_np.complex128, copy=False)
-    td = _np.fft.ifft(A, axis=1)
+    A = A.astype(np.complex128, copy=False)
+    td = np.fft.ifft(A, axis=1)
     try:
-        _plt.figure(); _plt.plot(_np.real(td[0,:])); _plt.title("Time-domain (angle 0)"); _plt.grid(True); _plt.show()
+        plt.figure(); plt.plot(np.real(td[0,:])); plt.title("Time-domain (angle 0)"); plt.grid(True); plt.show()
     except Exception:
         pass
     return td

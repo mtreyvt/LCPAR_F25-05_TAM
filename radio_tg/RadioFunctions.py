@@ -26,6 +26,7 @@
 # WSU-ECE legal statement here
 #------------------------------------------------------------------------------
 import numpy as np
+import math
 from PlotGraph import PlotGraph
 import json
 import RxRadio
@@ -451,10 +452,10 @@ def do_AMTGscan(params):
     freq_list = np.unique(freq_rounded)
 
     
-    for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
-    	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
-    	freq_list_round[i] = round(val, rounding_factor)
-    freq_list = freq_list_round
+    # for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
+    # 	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
+    # 	freq_list_round[i] = round(val, rounding_factor)
+    # freq_list = freq_list_round
     	
     for freq in freq_list:                  # Freq Control
     	radio_rx_graph = RxRadio.RadioFlowGraph(
@@ -716,7 +717,7 @@ def round_sig(x:float, sig: int = 3) -> float:
         return x
     if x == 0.0:
         return 0.0
-    ndigits = int(sig - 1 - math.floot(math.log10(abs(x))))
+    ndigits = int(sig - 1 - math.floor(math.log10(abs(x))))
     ndigits = max(-12, min(12, ndigits))
     return round(x, ndigits)
 #--------------------------------------------------------------------------EoF
