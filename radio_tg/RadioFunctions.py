@@ -434,13 +434,22 @@ def do_AMTGscan(params):
     datafile = OpenDatafile(params) 
     AMantenna_data   = []
     
-    #creates a frequency list based on params, needs to be 3 sig figs
-    freq_list = np.linspace(params["lower_frequency"],
-    	params["upper_frequency"], params["freq_steps"])
-    freq_list_round = np.zeros_like(freq_list) #round frequency array to 3 sig figs
+    # #creates a frequency list based on params, needs to be 3 sig figs
+    # freq_list = np.linspace(params["lower_frequency"],
+    # 	params["upper_frequency"], params["freq_steps"])
+    # freq_list_round = np.zeros_like(freq_list) #round frequency array to 3 sig figs
 
-    #removing duplicates introduced by rounding so we scan once
-    freq_list = np.unique(freq_list_round)
+    # #removing duplicates introduced by rounding so we scan once
+    # freq_list = np.unique(freq_list_round)
+
+    #new frequency rounding value
+    freq_lin = np.linspace(params["lower_frequency"]
+                           params["upper_frequency"]
+                           params["freq_steps"])
+    
+    freq_rounded = np.array([round_sig(v,3) for v in freq_lin], dtype = float)
+    freq_list = np.unique(freq_rounded)
+    
     
     for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
     	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
@@ -701,6 +710,14 @@ def _tg_data_to_dB (td: np.ndarray, pick: str = "max",idx: int | None = None) ->
         y = mag.max(axis=1)
     y = y/(np.max(y) if np.max(y) > 0 else 1.0)
     return 20.0 * np.log10(np.clip(y, 1e-12, None))
-    
+
+def round_sig(x:float, sig: int = 3) -> float: 
+    if not np.isfinite(x):
+        return x
+    if x == 0.0:
+        return 0.0
+    ndigits = int(sig - 1 - math.floot(math.log10(abs(x))))
+    ndigits = max(-12, min(12, ndigits))
+    return round(x, ndigits)
 #--------------------------------------------------------------------------EoF
 
