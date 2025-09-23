@@ -88,10 +88,10 @@ def InitMotor(params):
     return motor_controller
 #------------------------------------------------------------------------------
 def OpenDatafile(params):
-    filename= time.strftime("%d-%b-%Y_%H-%M-%S") + params["filename"]
+    filename = time.strftime("%d-%b-%Y_%H-%M-%S")+params["filename"]
     datafile_fp = open(filename, 'w')
     datafile_fp.write(params["notes"]+"\n")
-    datafile_fp.write("% Mast Angle, Arm Angle, Background RSSI, Transmission RSSI\n")
+    datafile_fp.write("% Mast Angle, Arm Angle, Background RSSI, Real, Imag\n")
     return datafile_fp
 #------------------------------------------------------------------------------
 def rms(data):
@@ -229,6 +229,7 @@ def do_AMscan(params):
     angles = range(int(params["mast_start_angle"]), int(params["mast_end_angle"]),1)
     arm_angle = np.zeros(len(avg));
     background_rssi = np.zeros(len(avg));
+
     plt.plot(antenna_pow)
     plt.show()
     plt.plot(avg)
@@ -326,233 +327,188 @@ def do_AMmeas(params):
     return antenna_data
     
 #==============================================================================
-
 def do_AMTGmeas(params):
     motor_controller = InitMotor(params)
-    datafile = OpenDatafile(params) 
+    datafile = OpenDatafile(params)
     antenna_data = []
-    mast_angles = np.linspace(
-        params["mast_start_angle"], 
-        params["mast_end_angle"], 
-        params["mast_steps"])
-    arm_angles = np.linspace(params["arm_start_angle"], 
-        params["arm_end_angle"], 
-        params["arm_steps"])
-    #create a list of frequencies, needs to be rounded to 3 sig figs or'
-    #radio doesn't work
-    freq_list = np.linspace(params["lower_frequency"],
-    	params["upper_frequency"], params["freq_steps"])
-    freq_list_round = np.zeros_like(freq_list) #round frequency array to 3 sig figs
-    for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
-    	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
-    	freq_list_round[i] = round(val, rounding_factor)
-    freq_list = freq_list_round
-    print(freq_list)
- 
-    for freq in freq_list:                  # Freq Control
-    	radio_rx_graph = RxRadio.RadioFlowGraph(
-        	params["rx_radio_id"], 
-        	freq,
-        	params["rx_freq_offset"], 
-        	numSamples=params["rx_samples"])
-    	radio_tx_graph = TxRadio.RadioFlowGraph(
-            	params["tx_radio_id"], 
-        	freq, 
-        	params["tx_freq_offset"])
-    	radio_tx_graph.start()
-    	time.sleep(3)                      # TX latency
-    	    
-    	for mast_angle in mast_angles:        # azimuth control
-        	for arm_angle in arm_angles:      # elevation control (under constr)
-            		background_rssi = 0.0
-            		transmission_rssi = 0.0
-            		
-            		print("Target Mast Angle: "+str(mast_angle))
-            		print("Target Arm Angle: "+str(arm_angle))
-            		print("Moving antenna...")
-            		motor_controller.rotate_mast(mast_angle)
-            		motor_controller.rotate_arm(arm_angle)
-            		print("Movement complete")
-            		#------------------------------------------------------------------
-            		# transmission rssi reading
-            		#------------------------------------------------------------------
-            		print("Taking transmitted signal sample...")
-            		radio_rx_graph.start()
-            		radio_rx_graph.wait()
-            		#radio_rx_graph.stop()
-            		# get data from the receiver and reset its output vector
-            		data=radio_rx_graph.vector_sink_0.data()
-            		data_i=radio_rx_graph.vector_sink_1.data()
-            		min_length = min(len(data), len(data_i)) #make arrays equal length
-            		antenna_data_complex = np.vectorize(complex)(data[:min_length], data_i[:min_length])
-            		radio_rx_graph.vector_sink_0.reset()
-            		radio_rx_graph.blocks_head_0.reset()
-            		radio_rx_graph.vector_sink_1.reset()
-            		radio_rx_graph.blocks_head_1.reset()
-            		#------------------------------------------------------------------
-            		#originally trimmed like this NW
-            		#data_points = delete(data_points, range(399000));
-            		#------------------------------------------------------------------
-            		print("read {:d} data_points".format(len(data)))
-            		transmission_rssi=np.sqrt(np.square(data).mean())
-            		transmission_rssi_i=np.sqrt(np.square(data_i).mean())
-            		rssi_i = np.vectorize(complex)(transmission_rssi, transmission_rssi_i)
-            		print("Transmission RSSI: {:.3e}".format(transmission_rssi))
-            		print("Saving samples")
-            		datafile.write(
-            		    str(mast_angle) + ',' + 
-            		    str(arm_angle) + ',' + 
-            		    str(background_rssi) + ',' + 
-            		    str(rssi_i) + '\n' #this is the RSSI with the imaginary part in it
-            		    #','.join(map(str,antenna_data_complex)) + '\n'
-            		    )
-            		antenna_data.append((mast_angle, arm_angle, 
-            		    background_rssi, transmission_rssi, rssi_i))
-    	print("Returning mast and arm to home position...")
-    	motor_controller.rotate_mast(0)
-    	motor_controller.rotate_arm(0)
-    	print("Mast and arm should now be in home position")
-#    	datafile.close();
-#    	print("datafile closed")
-#    	print("Scan completed")
-    	radio_tx_graph.stop()
-    	radio_tx_graph.wait()
 
-#    print("Returning mast and arm to home position...")
-#    motor_controller.rotate_mast(0)
-#    motor_controller.rotate_arm(0)
-#    print("Mast and arm should now be in home position")
-    datafile.close()
-    print("datafile closed")
-    print("scan complete")
-    #
-    return antenna_data
-
-#==============================================================================
-
-def do_AMTGscan(params):
-    motor_controller = InitMotor(params)
-    datafile = OpenDatafile(params) 
-    AMantenna_data   = []
+    mast_angles = np.linspace(params["mast_start_angle"],
+                              params["mast_end_angle"],
+                              params["mast_steps"], dtype = float)
+    arm_angles = np.linspace(params["arm_start_angle"],
+                             params["arm_end_angle"],
+                             params["arm_steps"], dtype = float)
     
-    # #creates a frequency list based on params, needs to be 3 sig figs
-    # freq_list = np.linspace(params["lower_frequency"],
-    # 	params["upper_frequency"], params["freq_steps"])
-    # freq_list_round = np.zeros_like(freq_list) #round frequency array to 3 sig figs
-
-    # #removing duplicates introduced by rounding so we scan once
-    # freq_list = np.unique(freq_list_round)
-
-    #new frequency rounding value
     freq_lin = np.linspace(params["lower_frequency"],
                            params["upper_frequency"],
-                           params["freq_steps"])
+                           params["freq_steps"], dtype = float)
     
     freq_rounded = np.array([round_sig(v,3) for v in freq_lin], dtype = float)
     freq_list = np.unique(freq_rounded)
-
     
-    # for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
-    # 	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
-    # 	freq_list_round[i] = round(val, rounding_factor)
-    # freq_list = freq_list_round
-    	
-    for freq in freq_list:                  # Freq Control
-    	radio_rx_graph = RxRadio.RadioFlowGraph(
-        	params["rx_radio_id"], 
-        	freq,
-        	params["rx_freq_offset"])
-    	radio_tx_graph = TxRadio.RadioFlowGraph(
-            	params["tx_radio_id"], 
-        	freq, 
-        	params["tx_freq_offset"])
-    	radio_tx_graph.start()
-    	time.sleep(3)                                             # Tx latency
-    	print("Moving to start angle")
-    	motor_controller.rotate_mast(params["mast_start_angle"]);
-    	print("Collecting data while moving to end angle")
-    	radio_rx_graph.start()
-    	motor_controller.rotate_mast(params["mast_end_angle"]);
-    	radio_rx_graph.stop()
-    	radio_tx_graph.stop();                                    # stop Tx
-    	print("Finished collection, return to 0")                 #
-    	motor_controller.rotate_mast(0);                          # Reset AUT
-    	antenna_data=radio_rx_graph.vector_sink_0.data()#+1j*radio_rx_graph.vector_sink_1.data()
-    	antenna_data_i = radio_rx_graph.vector_sink_1.data()    	
-    	n=len(antenna_data)
-    	print('hi')
-    	print(n)
-#    	print("read {:d} data_points".format(n))
-#    	antenna_pow = np.square(antenna_data)
-    	numangles = params["mast_end_angle"]-params["mast_start_angle"] 
-    	binsize=int(n/numangles)
-#    	print("binsize= {:d}".format(binsize))
-    	avg=np.zeros(numangles)
-    	avg_i=np.zeros(numangles)
-    	for i in range(numangles):
-        	#avg[i]=antenna_data[int(i*binsize/2)]
-        	#avg_i[i]=antenna_data_i[int(i*binsize/2)]
-        	avg[i]=np.sqrt(np.square(
-        	    antenna_data[i*binsize:(i+1)*binsize]).sum()/binsize)
-        	avg_i[i]=np.sqrt(np.square(
-        	    antenna_data_i[i*binsize:(i+1)*binsize]).sum()/binsize)
-    	angles = range(int(params["mast_start_angle"]), int(params["mast_end_angle"]),1)
-    	arm_angle = np.zeros(len(avg));
-    	background_rssi = np.zeros(len(avg));
-    	complex_avg = np.vectorize(complex)(avg, avg_i)
-    	min_length = min(len(antenna_data), len(antenna_data_i)) #make arrays equal length
-    	#antenna_data_complex = np.vectorize(complex)(antenna_data[:min_length], antenna_data_i[:min_length])s
-    	#print(antenna_data_complex.shape)
-#    	plt.plot(antenna_pow)
-#    	plt.show()
-#    	plt.plot(avg)
-#    	plt.show()
-#    	print("avg {:d}".format(len(avg)),binsize)
-    	for i in range(len(avg)):
-        	datafile.write(
-        	        str(angles[i]) + ',' + 
-        	        str(arm_angle[i]) + ',' + 
-        	        str(background_rssi[i]) + ',' + 
-        	        str(complex_avg[i]) + ',' +
-        	        #','.join(map(str,antenna_data_complex[i*binsize:(i+1)*binsize])) + '\n'
-        	        str(avg[i]) + '\n' #changed
-        	        )
-        	AMantenna_data.append((angles[i], arm_angle[i], 
-        	    background_rssi[i], avg[i], complex_avg[i]))
+    for freq in freq_list: 
+        radio_rx_graph = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq,
+                                                params["rx_freq_offset"],
+                                                numSamples = params["rx_samples"])
+        radio_tx_graph = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq,
+                                                params["tx_freq_offset"])
+        
+        radio_tx_graph.start()
+        time.sleep(3)
+        
+        for mast_angle in mast_angles:
+            for arm_angle in arm_angles:
+                background_rssi = 0.0
 
-    #post prossesing script currently does this better
-    pulses = TimeGating.synthetic_pulse(freq_list, 2.5e-8)
-    TGdata = np.array(AMantenna_data)
-    TGavg = TimeGating.format_data(TGdata[:,4],params["freq_steps"])
-    TGantenna_data = TimeGating.synthetic_output(pulses, TGavg, params["freq_steps"])
-    TGantenna_data = TimeGating.to_time_domain(TGantenna_data, params["freq_steps"])
-    data = np.fft.fft(TGantenna_data, axis = 1)
-    plt.plot(data[:,1])
-    plt.title('FFT result')
-    plt.show() 
-    #polar plotting setup
-    #take the data and put it into dB(gated_dB)
-    #arrange our angles into the plot (deg)
-    #plot the data 
-    gated_db = _tg_data_to_dB(TGantenna_data, pick = "max")
-    deg = np.arange(int(params["mast_start_angle"]),
-                    int(params["mast_end_angle"]),1,dtype = float)
+                print(f"Target Mast Angle:{mast_angle}")
+                print(f"Target Arm Angle: {arm_angle}")
+                motor_controller.rotate_mast(mast_angle)
+                motor_controller.rotate_arm(arm_angle)
+                print("Movement Complete")
+
+                print("Capturing signal")
+                radio_rx_graph.start()
+                radio_rx_graph.wait()
+
+                I = np.array(radio_rx_graph.vector_sink_0.data(), dtype = float)
+                Q = np.array(radio_rx_graph.vector_sink_1.data(), dtype = float)
+                L = min(I.size, Q.size)
+                print(f"read {L:d} samples")
+
+                if L == 0:
+                    transmission_rssi = 0.0
+                    rssi_complex = complex(0.0,0.0)
+                else:
+                    v_c = I[:L] + 1j*Q[:L]
+
+                    transmission_rssi = float(np.sqrt(np.mean(np.abs(v_c)**2)))
+
+                    rssi_complex = complex(np.mean(v_c))
+
+                radio_rx_graph.vector_sink_0.reset(); radio_rx_graph.blocks_head_0.reset()
+                radio_rx_graph.vector_sink_1.reset(); radio_rx_graph.blocks_head_1.reset()
+
+                print(f"Transmission RSSI: {transmission_rssi:.3e}")
+                print("Saving Samples")
+
+                datafile.write(f"{mast_angle},{arm_angle},{background_rssi},"
+                            f"{rssi_complex.real},{rssi_complex.imag}\n")
+                antenna_data.append((mast_angle, arm_angle,
+                                     background_rssi, transmission_rssi,rssi_complex))
+            
+            print("Returning mast to home")
+            motor_controller.rotate_mast(0)
+            motor_controller.rotate_arm(0)
+
+            radio_tx_graph.stop()
+            radio_tx_graph.wait()
+        datafile.close()
+        print("scan complete")
+        return antenna_data
+
+#===============================================================================
+def do_AMTGscan(params):
+    import TimeGating
+    from PolarPlot import plot_polar_patterns
+
+    motor_controller = InitMotor(params)
+    datafile = OpenDatafile(params)
+    AMantenna_data = []
+
+    # freq list (round + dedupe)
+    freq_lin = np.linspace(float(params["lower_frequency"]),
+                           float(params["upper_frequency"]),
+                           int(params["freq_steps"]), dtype=float)
+    freq_rounded = np.array([round_sig(v, 3) for v in freq_lin], dtype=float)
+    freq_list = np.unique(freq_rounded)
+    Nf = int(len(freq_list))
+
+    # angle grid from steps
+    Nangles = int(params["mast_steps"])
+    mast_start = float(params["mast_start_angle"])
+    mast_end   = float(params["mast_end_angle"])
+    mast_angles = np.linspace(mast_start, mast_end, Nangles, endpoint=False, dtype=float)
+
+    arm_fixed = float(params.get("arm_fixed_angle", params["arm_start_angle"]))
+
+    for freq in freq_list:
+        rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq, params["rx_freq_offset"])
+        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])
+
+        tx.start()
+        time.sleep(3)
+
+        print("Moving to start angle")
+        motor_controller.rotate_mast(mast_start)
+
+        print("Collecting data while moving to end angle")
+        rx.start()
+        motor_controller.rotate_mast(mast_end)
+        rx.stop(); rx.wait()
+        tx.stop(); tx.wait()
+
+        # Fetch I/Q and build complex samples
+        I = np.array(rx.vector_sink_0.data(), dtype=float)
+        Q = np.array(rx.vector_sink_1.data(), dtype=float)
+        L = min(I.size, Q.size)
+        samps = np.zeros(1, dtype=np.complex128) if L == 0 else (I[:L] + 1j * Q[:L])
+
+        # Bin samples by angle (coherent mean per angle)
+        binsize = max(1, L // Nangles)
+        complex_per_angle = np.zeros(Nangles, dtype=np.complex128)
+        mag_per_angle     = np.zeros(Nangles, dtype=float)
+
+        for i in range(Nangles):
+            s = i * binsize
+            e = min((i + 1) * binsize, L)
+            seg = samps[s:e] if e > s else np.zeros(1, dtype=np.complex128)
+            cmean = seg.mean()
+            complex_per_angle[i] = cmean
+            mag_per_angle[i] = float(np.sqrt(np.mean(np.abs(seg) ** 2))) if seg.size else 0.0
+
+        # Write results (once per freq)
+        for angle_deg, cval, mag in zip(mast_angles, complex_per_angle, mag_per_angle):
+            datafile.write(f"{angle_deg},{arm_fixed},0.0,{cval.real},{cval.imag}\n")
+            AMantenna_data.append((angle_deg, arm_fixed, 0.0, mag, cval))
+
+        print("Finished collection, return to 0")
+        motor_controller.rotate_mast(0)
+
+    # ----- Time gating post (once after all freqs) -----
+    duration = float(params.get("tg_duration_s", 25e-9))
+    pulses = TimeGating.synthetic_pulse(freq_list, duration)   # len == Nf
+    TGdata = np.array(AMantenna_data, dtype=object)            # (angle, arm, bkg, mag, complex)
+    TGavg = TimeGating.format_data(TGdata[:, 4], Nf)           # [Nangles, Nf]
+    TGweighted = TimeGating.synthetic_output(pulses, TGavg, Nf)
+    TGtd = TimeGating.to_time_domain(TGweighted, Nf)
+
+    # Reduce time dimension → one dB value per angle
+    def _tg_time_to_db_per_angle(td: np.ndarray, pick: str = "max", idx: int | None = None) -> np.ndarray:
+        mag = np.abs(td)
+        if pick == "center":
+            if idx is None:
+                idx = mag.shape[1] // 2
+            y = mag[:, idx]
+        else:
+            y = mag.max(axis=1)
+        y = y / (y.max() if y.size else 1.0)
+        return 20.0 * np.log10(np.clip(y, 1e-12, None))
+
+    gated_db = _tg_time_to_db_per_angle(TGtd, pick="max")
+    deg = mast_angles
+
     plot_polar_patterns(
         deg,
-        traces = [("Time_Gated",gated_dB)],
-        rmin = -60.0, rmax = 0.0, rticks = (-60,-40,-20,0),
-        title = "Radiation Pattern (Time-Gated-Polar)"
+        traces=[("Time-Gated", gated_db)],
+        rmin=-60.0, rmax=0.0, rticks=(-60, -40, -20, 0),
+        title="Radiation Pattern (time-gated-polar)"
     )
-    
-    plt.plot(TGantenna_data)
-    plt.show()
-    datafile.close();
-    print("datafile closed")
 
+    datafile.close()
+    print("datafile closed")
     return AMantenna_data
 
-
-
+        
 #==============================================================================
 #------------------------------------------------------------------------------
 # non-coherent noise-subtraction method (1st algorithm)
@@ -700,17 +656,16 @@ def PlotFiles():
     plt.legend(loc="lower center", bbox_to_anchor=(1, 1))
     plt.show()
 
-def _tg_data_to_dB (td: np.ndarray, pick: str = "max",idx: int | None = None) ->np.ndarray:
-    import numpy as np
+def _tg_data_to_dB(td: np.ndarray, pick: str = "max", idx: int | None = None) -> np.ndarray:
     mag = np.abs(td)
     if pick == "center":
-        if idx is None: 
-            idx = mag.shape[1]//2
-            y = mag[:,idx]
-    else: 
+        if idx is None:
+            idx = mag.shape[1] // 2
+        y = mag[:, idx]
+    else:
         y = mag.max(axis=1)
-    y = y/(np.max(y) if np.max(y) > 0 else 1.0)
-    return 20.0 * np.log10(np.clip(y, 1e-12, None))
+    y = y/ (np.max(y) if np.max(y)>0 else 1.0)
+    return 20.0*np.log10(np.clip(y,1e-12, None))
 
 def round_sig(x:float, sig: int = 3) -> float: 
     if not np.isfinite(x):
