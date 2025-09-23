@@ -207,3 +207,36 @@ def wavelet_denoise_circ(x_db: np.ndarray,
 
     out = xpad_d[pad:-pad] if pad > 0 else xpad_d
     return out - out.max(initial=0.0)
+
+# single-frequency helpers ---
+
+def pattern_db_from_complex(per_angle_complex: np.ndarray) -> np.ndarray:
+    """
+    Take complex per-angle samples (I+1jQ mean per angle), return dB pattern
+    normalized so peak = 0 dB. Works for single-frequency scans.
+    """
+    c = np.asarray(per_angle_complex, dtype=np.complex128).ravel()
+    mag = np.abs(c)
+    mag /= (mag.max() if mag.size else 1.0)
+    return 20.0 * np.log10(np.clip(mag, 1e-12, None))
+
+
+def denoise_pattern_db(x_db: np.ndarray) -> np.ndarray:
+    """
+    Wavelet denoise in dB with circular padding (if pywt available), then
+    renormalize to 0 dB peak. Fallback: just return input.
+    """
+    x = np.asarray(x_db, float).ravel()
+    try:
+        from . import wavelet_denoise_circ  # if you placed in same module
+    except Exception:
+        # direct import if in same file (as in earlier code we wrote)
+        pass
+
+    try:
+        y = wavelet_denoise_circ(x, domain='dB', name='coif5',
+                                 method='universal', rule='soft',
+                                 cyclespin=8)
+        return y - np.max(y)
+    except Exception:
+        return x - np.max(x)

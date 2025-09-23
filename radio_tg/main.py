@@ -35,10 +35,11 @@ def main():
     menu_choices.append("Plot data from two files")                        # 6
     menu_choices.append("Capture single measurement")                      # 7
     menu_choices.append("Capture single background")                       # 8
-    menu_choices.append("Quit")                                            # 9
-    menu_choices.append("Time Gate Measure AUT w/ coherent AM method")     # 10
-    menu_choices.append("Time Gate FastScan AUT w/ coherent AM method")    # 11
-    menu_choices.append("Capture single Time Gate  measurement")           # 12
+    menu_choices.append("Time Gate Measure AUT w/ coherent AM method")     # 9
+    menu_choices.append("Time Gate FastScan AUT w/ coherent AM method")    # 10
+    menu_choices.append("Capture single Time Gate  measurement")           # 11
+    menu.choices.append("Single Frequency Time Gate Scan")                 # 12
+    menu_choices.append("Quit")                                            # 13
     #
     while not quit:
         try:
@@ -51,18 +52,21 @@ def main():
                 params = RadioFunctions.LoadParams(param_filename)
                 data = RadioFunctions.do_AMmeas(params)
                 print(data)
-            elif selection == 10: 
+            elif selection == 9: 
                 params = RadioFunctions.LoadParams(param_filename)
                 data = RadioFunctions.do_AMTGmeas(params)
                 print(data)
-            elif selection == 11:
+            elif selection == 10:
             	params = RadioFunctions.LoadParams(param_filename)
             	data = RadioFunctions.do_AMTGscan(params)
             	#print(data)
-            elif selection == 12:
+            elif selection == 11:
             	params = RadioFunctions.LoadParams(param_filename)
             	data = RadioFunctions.do_singleTG(params)
             	#print(data)
+            elif selection == 12
+                params = RadioFunctions.LoadParams(param_filename)
+                data = RadioFunctions._do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9)
             elif selection == 3: 
                 params = RadioFunctions.LoadParams(param_filename)
                 data = RadioFunctions.do_NSmeas(params)
@@ -86,7 +90,7 @@ def main():
                 print("Single background measurement")        
                 data = RadioFunctions.do_single(Tx=False)     
                 print("RMS = {:.3e}".format(data))            
-            elif selection == 9:                              
+            elif selection == 13:                              
                 print("Exiting...\n")                         
                 quit = True   
                                            
