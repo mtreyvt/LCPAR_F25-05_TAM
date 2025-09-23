@@ -478,9 +478,18 @@ def do_AMTGscan(params):
     duration = float(params.get("tg_duration_s", 25e-9))
     pulses = TimeGating.synthetic_pulse(freq_list, duration)   # len == Nf
     TGdata = np.array(AMantenna_data, dtype=object)            # (angle, arm, bkg, mag, complex)
-    TGavg = TimeGating.format_data(TGdata[:, 4], Nf)           # [Nangles, Nf]
-    TGweighted = TimeGating.synthetic_output(pulses, TGavg, Nf)
-    TGtd = TimeGating.to_time_domain(TGweighted, Nf)
+    TGavg = TimeGating.format_data(TGdata[:,4],Nf).T         # [Nangles, Nf]
+
+    Nf_from_data = TGavg.shape[1]
+    if pulses.size != Nf_from_data:
+        x_old = np.linspace(0.0,1.0,pulses.size)
+        x_new = np.linspace(0.0,1.0,Nf_from_data)
+        pulses = np.interp(x_new,x_old,pulses) if pulses.size >1 else np.full(Nf_from_data, float(pulses.ravel()[0]))
+        
+
+    TGweighted = TimeGating.synthetic_output(pulses, TGavg, Nf_from_data)
+    TGtd = TimeGating.to_time_domain(TGweighted, Nf_from_data)
+
 
     # Reduce time dimension → one dB value per angle
     def _tg_time_to_db_per_angle(td: np.ndarray, pick: str = "max", idx: int | None = None) -> np.ndarray:

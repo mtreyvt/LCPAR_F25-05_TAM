@@ -242,9 +242,14 @@ def print_and_return_data(data):
 
 def format_data(data, num_freqs):
     a = np.asarray(data)
-    row_len = len(a) // int(num_freqs)
-    return np.array([a[i:i+row_len] for i in range(0, len(a), row_len)])
-
+    Nf = int(num_freqs)
+    if a.size % Nf != 0:
+        raise ValueError(f"Length {a.size} not divisible by num_freqs {Nf}")
+    Nangles = a.size // Nf
+    out = np.empty((Nangles, Nf), dtype=a.dtype)
+    for k in range(Nf):
+        out[:, k] = a[k*Nangles:(k+1)*Nangles]
+    return out
 
 def synthetic_pulse(frequencies, duration):
     """
@@ -276,11 +281,23 @@ def synthetic_output(pulse, data, num_freqs):
     A = np.asarray(data)
     if A.ndim == 1:
         A = format_data(A, num_freqs)
-    A = A.astype(np.complex128, copy=False)   # keep complex
-    w = np.asarray(pulse, dtype=float).reshape(1, -1)
-    if A.shape[1] != w.shape[1]:
-        raise ValueError(f"Frequency dimension mismatch: data has {A.shape[1]}, pulse has {w.shape[1]}")
-    return A * w
+    A = A.astype(np.complex128, copy = False)
+
+    w = np.asarray(pulse, dtype = float).ravel()
+    Nf = A.shape[1]
+
+    if w.size != Nf:
+        if w.size == 0:
+            raise ValueError("pulse has zero length; cannot weight frequencies.")
+        elif w.size == 1:
+            w = np.full(Nf, w[0], dtype = float)
+        else:
+            x_old = np.linspace(0.0,1.0,w.size)
+            x_new = np.linspace(0.0,1.0,Nf)
+            w = np.interp(x_new,x_old,w).astype(float, copy = False)
+    
+    w = w.reshape(1,-1)
+    return A*w
 
 
 def to_time_domain(data, num_freqs):
