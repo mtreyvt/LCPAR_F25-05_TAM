@@ -36,6 +36,7 @@ from MotorController import MotorController
 from PolarPlot import plot_polar_patterns, plot_patterns
 import matplotlib.pyplot as plt
 import time
+
 #------------------------------------------------------------------------------
 def LoadParams(filename=None):
     """ Load parameters file
@@ -488,10 +489,10 @@ def do_AMTGscan(params):
 
     return list(zip(deg.tolist(), [0.0]*len(deg), [0.0]*len(deg), y_lin.tolist()))
 
-def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool = True, non_blocking: bool = True):
+def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool = True):
     import TimeGating
-    from PolarPlot import plot_polar_patterns, plot_patterns
-    import matplotlib.pyplot as plt
+    from PolarPlot import plot_polar_patterns
+    import numpy as np, time
 
     motor_controller = InitMotor(params)
     datafile = OpenDatafile(params)
@@ -504,8 +505,8 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool 
     mast_steps = int(params["mast_steps"])
     mast_angles = np.linspace(mast_start, mast_end, mast_steps, endpoint=False, dtype=float)
 
-    rx = None
-    tx = None
+    rx = tx = None
+    per_angle_complex = None
     try:
         rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq, params["rx_freq_offset"])
         tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])
@@ -517,64 +518,58 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool 
         per_angle_complex = _collect_complex_per_angle(rx, mast_start, mast_end, mast_steps, motor_controller)
 
     finally:
-        # make sure radios and motor are released regardless of errors
+        # cleanup
         try:
-            if rx is not None:
-                rx.stop(); rx.wait()
-        except Exception:
-            pass
+            if rx: rx.stop(); rx.wait()
+        except Exception: pass
         try:
-            if tx is not None:
-                tx.stop(); tx.wait()
-        except Exception:
-            pass
+            if tx: tx.stop(); tx.wait()
+        except Exception: pass
         try:
             motor_controller.rotate_mast(0)
-        except Exception:
-            pass
+        except Exception: pass
 
-    # write raw complex mean per angle to file
+    # write raw complex per-angle data
     for ang, cval in zip(mast_angles, per_angle_complex):
         datafile.write(f"{ang:.1f},0.0,0.0,{cval.real:.8e},{cval.imag:.8e}\n")
     datafile.close()
     print("raw datafile closed")
 
-    # build patterns
-    noisy_db = TimeGating.pattern_db_from_complex(per_angle_complex)
-    gated_db = TimeGating.denoise_pattern_db(noisy_db)
+    # --- Build patterns ---
+    noisy_db = 20*np.log10(np.abs(per_angle_complex)/np.max(np.abs(per_angle_complex)))
 
+    # shape it like [angles, freqs] with 1 frequency column
+    freq_resp = per_angle_complex[:, np.newaxis]
+
+    fs = float(params.get("fs", 200e6))   # sample rate
+    N_fft = 2048                          # tunable
+
+    h_t = TimeGating.impulse_response(freq_resp, N_fft)
+    h_t_gated = TimeGating.apply_time_gate(h_t, fs, gate_ns=10.0, alpha=0.5)
+    H_gated = TimeGating.gated_frequency_response(h_t_gated, N_fft)
+    gated_pattern = TimeGating.extract_pattern(H_gated)
+    gated_pattern = TimeGating.denoise_pattern(gated_pattern)
+    gated_pattern -= np.max(gated_pattern)
+
+    # --- Plot ---
     if show_plots:
-        # draw plots; default to non-blocking so menu returns
         plot_polar_patterns(
             mast_angles,
-            traces=[("Noisy", noisy_db), ("Time-Gated", gated_db)],
-            rmin=-40.0, rmax=0.0, rticks=(-40, -30, -20, -10, 0),
-            title=f"Radiation Pattern @ {freq/1e9:.3f} GHz (Noisy vs Time-Gated)"
+            traces=[
+                ("Raw (noisy)", noisy_db),
+                ("Time-Gated", gated_pattern)
+            ],
+            rmin=-60, rmax=0, rticks=(-60, -40, -20, 0),
+            title=f"Noisy vs Time-Gated Pattern @ {freq/1e9:.2f} GHz"
         )
-        try:
-            plot_patterns(
-                mast_angles,
-                traces=[("Noisy", noisy_db), ("Time-Gated", gated_db)],
-                title=f"Pattern @ {freq/1e9:.3f} GHz (Noisy vs TG)"
-            )
-        except Exception:
-            pass
-
-        if non_blocking:
-            plt.ion()
-            plt.show(block=False)
-            plt.pause(0.1)         # allow the UI event loop to tick
-            # If you want an immediate return with no windows left open, uncomment:
-            # plt.close('all')
-        else:
-            plt.show()             # (blocking)
 
     return {
         "angles_deg": mast_angles.tolist(),
         "complex_per_angle": per_angle_complex.tolist(),
         "noisy_db": noisy_db.tolist(),
-        "tg_db": gated_db.tolist(),
+        "tg_db": gated_pattern.tolist(),
     }
+
 
         
 #==============================================================================
