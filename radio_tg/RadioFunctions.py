@@ -443,13 +443,13 @@ def do_AMTGscan(params):
     # freq_list = np.unique(freq_list_round)
 
     #new frequency rounding value
-    freq_lin = np.linspace(params["lower_frequency"]
-                           params["upper_frequency"]
+    freq_lin = np.linspace(params["lower_frequency"],
+                           params["upper_frequency"],
                            params["freq_steps"])
     
     freq_rounded = np.array([round_sig(v,3) for v in freq_lin], dtype = float)
     freq_list = np.unique(freq_rounded)
-    
+
     
     for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
     	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
