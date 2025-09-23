@@ -36,7 +36,6 @@ from MotorController import MotorController
 from PolarPlot import plot_polar_patterns, plot_patterns
 import matplotlib.pyplot as plt
 import time
-from typing import Tuple
 #------------------------------------------------------------------------------
 def LoadParams(filename=None):
     """ Load parameters file
@@ -99,46 +98,6 @@ def rms(data):
     """ return the rms of a data vector """
     return np.sqrt(np.square(data).mean())
 
-def _resample_complex_to_360(angles_deg: np.ndarray, cvals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Interpolate complex per-angle data to exactly 360 points (0..359 deg).
-    Interpolates real & imag separately with wrap-around continuity.
-    """
-    a = np.asarray(angles_deg, float).ravel()
-    c = np.asarray(cvals, complex).ravel()
-    if a.size < 2:
-        # trivial fallback
-        deg_360 = np.arange(0.0, 360.0, 1.0)
-        return deg_360, np.full(360, c[0] if c.size else 0.0+0.0j, dtype=np.complex128)
-
-    # Normalize angles to 0..360 span
-    a0, aN = float(a[0]), float(a[-1])
-    span = (aN - a0) if aN != a0 else 360.0
-    an = (a - a0) * (360.0 / span)
-
-    # Wrap: append first sample at 360° to avoid edge drop in interp
-    an_pad = np.r_[an, 360.0]
-    re_pad = np.r_[c.real, c.real[0]]
-    im_pad = np.r_[c.imag, c.imag[0]]
-
-    deg_360 = np.arange(0.0, 360.0, 1.0)
-    re_i = np.interp(deg_360, an_pad, re_pad)
-    im_i = np.interp(deg_360, an_pad, im_pad)
-    return deg_360, (re_i + 1j * im_i).astype(np.complex128)
-
-
-def _bin_stream_to_Nangles_complex(samps: np.ndarray, Nangles: int) -> np.ndarray:
-    """Average complex samples into Nangles equal contiguous bins."""
-    L = int(samps.size)
-    if L == 0 or Nangles <= 0:
-        return np.zeros(max(1, Nangles), dtype=np.complex128)
-    # Split into (almost) equal contiguous bins
-    edges = np.linspace(0, L, Nangles + 1, dtype=int)
-    out = np.zeros(Nangles, dtype=np.complex128)
-    for i in range(Nangles):
-        s, e = edges[i], edges[i+1]
-        seg = samps[s:e]
-        out[i] = seg.mean() if seg.size else 0.0 + 0.0j
-    return out
 #------------------------------------------------------------------------------
 #
 #------------------------------------------------------------------------------
@@ -530,123 +489,93 @@ def do_AMTGscan(params):
     return list(zip(deg.tolist(), [0.0]*len(deg), [0.0]*len(deg), y_lin.tolist()))
 
 def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool = True, non_blocking: bool = True):
-    """Single-frequency time-gated scan with exactly 360 output angles."""
     import TimeGating
     from PolarPlot import plot_polar_patterns, plot_patterns
+    import matplotlib.pyplot as plt
 
     motor_controller = InitMotor(params)
     datafile = OpenDatafile(params)
 
-    # One frequency (rounded to 3 sig figs for the SDR)
+    # one frequency (rounded to 3 sig figs for the SDR)
     freq = float(round_sig(freq_hz, 3))
 
-    # Angle config from params (start/end define sweep span)
     mast_start = float(params["mast_start_angle"])
     mast_end   = float(params["mast_end_angle"])
+    mast_steps = int(params["mast_steps"])
+    mast_angles = np.linspace(mast_start, mast_end, mast_steps, endpoint=False, dtype=float)
 
-    # Target 360-point output
-    Nangles_target = 360
-
-    # Optionally request a larger capture so we have enough samples to fill 360 bins
-    # If your RxRadio supports numSamples, use it; otherwise capture runs until flowgraph stops.
+    rx = None
+    tx = None
     try:
-        rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq, params["rx_freq_offset"],
-                                    numSamples=int(params.get("rx_samples", 200000)))
-    except TypeError:
         rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq, params["rx_freq_offset"])
+        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])
 
-    tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])
-
-    try:
         tx.start()
         time.sleep(3)
 
         print(f"Single-frequency scan @ {freq/1e9:.3f} GHz: rotating & collecting …")
-        print("Moving to start angle")
-        motor_controller.rotate_mast(mast_start)
-
-        # Collect while rotating to end angle
-        print("Collecting data while moving to end angle")
-        rx.start()
-        motor_controller.rotate_mast(mast_end)
-        rx.stop(); rx.wait()
-        tx.stop(); tx.wait()
-
-        # Build complex sample stream
-        I = np.array(rx.vector_sink_0.data(), dtype=float)
-        Q = np.array(rx.vector_sink_1.data(), dtype=float)
-        L = min(I.size, Q.size)
-        print(f"Captured {L} I/Q samples")
-        samps = np.zeros(1, dtype=np.complex128) if L == 0 else (I[:L] + 1j * Q[:L])
-
-        # Try to bin directly into 360 bins; if too few samples, bin what we can then interpolate to 360
-        if L >= Nangles_target:
-            complex_per_angle = _bin_stream_to_Nangles_complex(samps, Nangles_target)  # direct 360
-            mast_angles = np.arange(0.0, 360.0, 1.0, dtype=float)
-        else:
-            # Not enough samples for 360 averaging: make a coarse per-angle using ~sqrt(L) bins, then upsample to 360
-            N_coarse = max(8, min(180, int(np.sqrt(max(1, L)))))  # heuristic
-            coarse = _bin_stream_to_Nangles_complex(samps, N_coarse)
-            # coarse angles span mast_start..mast_end; map to 0..360
-            coarse_angles = np.linspace(mast_start, mast_end, N_coarse, endpoint=False, dtype=float)
-            mast_angles, complex_per_angle = _resample_complex_to_360(coarse_angles, coarse)
-
-        # Save raw complex (360 pts) to file
-        for ang, cval in zip(mast_angles, complex_per_angle):
-            datafile.write(f"{ang:.1f},0.0,0.0,{cval.real:.8e},{cval.imag:.8e}\n")
-        datafile.close()
-        print("raw datafile closed")
-
-        # Noisy vs time-gated patterns (in dB)
-        noisy_db = TimeGating.pattern_db_from_complex(complex_per_angle)
-        gated_db = TimeGating.time_gate_single_freq_pattern(complex_per_angle, fs_hint=params.get("fs_hint", None))
-        # Optional wavelet smoothing (kept same API)
-        gated_db = TimeGating.denoise_pattern_db(gated_db)
-
-        if show_plots:
-            plot_polar_patterns(
-                mast_angles,
-                traces=[("Noisy", noisy_db), ("Time-Gated", gated_db)],
-                rmin=-40.0, rmax=0.0, rticks=(-40, -30, -20, -10, 0),
-                title=f"Radiation Pattern @ {freq/1e9:.3f} GHz (Noisy vs Time-Gated)"
-            )
-            try:
-                plot_patterns(
-                    mast_angles,
-                    traces=[("Noisy", noisy_db), ("Time-Gated", gated_db)],
-                    title=f"Pattern @ {freq/1e9:.3f} GHz (Noisy vs TG)"
-                )
-            except Exception:
-                pass
-
-            if non_blocking:
-                plt.ion(); plt.show(block=False); plt.pause(0.1)
-                # If you want the menu back immediately with no windows, uncomment:
-                # plt.close('all')
-            else:
-                plt.show()
-
-        return {
-            "angles_deg": mast_angles.tolist(),
-            "complex_per_angle": complex_per_angle.tolist(),
-            "noisy_db": noisy_db.tolist(),
-            "tg_db": gated_db.tolist(),
-        }
+        per_angle_complex = _collect_complex_per_angle(rx, mast_start, mast_end, mast_steps, motor_controller)
 
     finally:
-        # Safety cleanup
+        # make sure radios and motor are released regardless of errors
+        try:
+            if rx is not None:
+                rx.stop(); rx.wait()
+        except Exception:
+            pass
+        try:
+            if tx is not None:
+                tx.stop(); tx.wait()
+        except Exception:
+            pass
         try:
             motor_controller.rotate_mast(0)
         except Exception:
             pass
+
+    # write raw complex mean per angle to file
+    for ang, cval in zip(mast_angles, per_angle_complex):
+        datafile.write(f"{ang:.1f},0.0,0.0,{cval.real:.8e},{cval.imag:.8e}\n")
+    datafile.close()
+    print("raw datafile closed")
+
+    # build patterns
+    noisy_db = TimeGating.pattern_db_from_complex(per_angle_complex)
+    gated_db = TimeGating.denoise_pattern_db(noisy_db)
+
+    if show_plots:
+        # draw plots; default to non-blocking so menu returns
+        plot_polar_patterns(
+            mast_angles,
+            traces=[("Noisy", noisy_db), ("Time-Gated", gated_db)],
+            rmin=-40.0, rmax=0.0, rticks=(-40, -30, -20, -10, 0),
+            title=f"Radiation Pattern @ {freq/1e9:.3f} GHz (Noisy vs Time-Gated)"
+        )
         try:
-            rx.stop(); rx.wait()
+            plot_patterns(
+                mast_angles,
+                traces=[("Noisy", noisy_db), ("Time-Gated", gated_db)],
+                title=f"Pattern @ {freq/1e9:.3f} GHz (Noisy vs TG)"
+            )
         except Exception:
             pass
-        try:
-            tx.stop(); tx.wait()
-        except Exception:
-            pass
+
+        if non_blocking:
+            plt.ion()
+            plt.show(block=False)
+            plt.pause(0.1)         # allow the UI event loop to tick
+            # If you want an immediate return with no windows left open, uncomment:
+            # plt.close('all')
+        else:
+            plt.show()             # (blocking)
+
+    return {
+        "angles_deg": mast_angles.tolist(),
+        "complex_per_angle": per_angle_complex.tolist(),
+        "noisy_db": noisy_db.tolist(),
+        "tg_db": gated_db.tolist(),
+    }
+
         
 #==============================================================================
 #------------------------------------------------------------------------------
