@@ -7,149 +7,165 @@
 #gives us cleaner data, This done by setting a window performing some fft/ifft
 #and re-sending the data 
 #------------------------------------------------------------------------------
+
 from __future__ import annotations
-from gnuradio import analog
-from gnuradio import blocks
-from gnuradio import network
-from gnuradio import filter
-from gnuradio import gr
-from gnuradio.filter import firdes
-from gnuradio.filter import window
-import matplotlib.pyplot as plt
+
 import numpy as np
+import typing as _t
+import matplotlib.pyplot as plt
 
-
-import os
-import argparse
-from typing import Literal, Optional, Tuple
-
+from typing import Literal, Optional
 from scipy.signal import windows
 
-#letting wavelet denoise be optional
-try: 
-    import pywt 
+# Optional wavelet denoise
+try:
+    import pywt
     _HAS_PYWT = True
 except Exception:
     _HAS_PYWT = False
 
-#-----setting up time gate
 
-#defining math function for powers of 2 
+# ---------- utils ----------
 def next_pow2(n: int) -> int:
-    """Return the next power of 2 >= n."""
-    return 1 << (int(n - 1).bit_length())
+    n = int(n)
+    if n <= 1:
+        return 1
+    return 1 << ((n - 1).bit_length())
 
-#defining different window functions we could use
-def _window_vec(length: int,
-                window: Literal['tukey', 'hann', 'hamming', 'rect'] = 'tukey',
-                tukey_alpha: float = 0.5) -> np.ndarray:
-    if length <= 0:
-        raise ValueError("window length must be > 0.")
-    if window == 'tukey':
-        return windows.tukey(length, alpha=tukey_alpha, sym=False)
-    if window == 'hann':
-        return windows.hann(length, sym=False)
-    if window == 'hamming':
-        return windows.hamming(length, sym=False)
-    if window == 'rect':
-        return np.ones(length, dtype=float)
-    raise ValueError(f"Unknown window: {window}")
-# --------------------- Time gate core --------------------- #
-def build_time_gate(fs: float,
-                    Nfft: int,
-                    t_start_s: float,
-                    t_end_s: float,
-                    window: Literal['tukey', 'hann', 'hamming', 'rect'] = 'tukey',
-                    tukey_alpha: float = 0.5) -> np.ndarray:
-    """
-    Build a full-length time-gating vector (length Nfft) with a window placed
-    between [t_start_s, t_end_s] (seconds). Python indexing throughout.
-    """
+
+# ---------- core gate ----------
+def build_time_gate(
+    fs: _t.SupportsFloat,
+    Nfft: _t.SupportsInt,
+    t_start_s: _t.SupportsFloat,
+    t_end_s: _t.SupportsFloat,
+    window: Literal["tukey", "hann", "hamming", "rect"] = "tukey",
+    tukey_alpha: float = 0.5,
+) -> np.ndarray:
+    """Return a real time window (length Nfft) with a gate in [t_start_s, t_end_s)."""
+    try:
+        fs = float(fs)
+        Nfft = int(Nfft)
+        t_start_s = float(t_start_s)
+        t_end_s = float(t_end_s)
+    except (TypeError, ValueError) as e:
+        raise TypeError(
+            f"build_time_gate expects numeric scalars: fs={type(fs)}, "
+            f"Nfft={type(Nfft)}, t_start_s={type(t_start_s)}, t_end_s={type(t_end_s)}"
+        ) from e
+
     if t_end_s <= t_start_s:
         raise ValueError("t_end_s must be greater than t_start_s.")
 
     start_idx = int(np.floor(t_start_s * fs))
     end_idx   = int(np.ceil(t_end_s * fs))
-
-    start_idx = max(0, min(start_idx, Nfft - 1))
-    end_idx   = max(0, min(end_idx,   Nfft - 1))
-    if end_idx <= start_idx:
-        end_idx = min(start_idx + 1, Nfft - 1)
-
-    length = end_idx - start_idx + 1
-    w = _window_vec(length, window=window, tukey_alpha=tukey_alpha)
+    start_idx = max(0, min(start_idx, Nfft))
+    end_idx   = max(0, min(end_idx, Nfft))
 
     gate = np.zeros(Nfft, dtype=float)
-    gate[start_idx:end_idx + 1] = w
+    if end_idx > start_idx:
+        win_len = end_idx - start_idx
+        if window == "tukey":
+            w = windows.tukey(win_len, alpha=tukey_alpha, sym=False)
+        elif window == "hann":
+            w = windows.hann(win_len, sym=False)
+        elif window == "hamming":
+            w = windows.hamming(win_len, sym=False)
+        elif window == "rect":
+            w = np.ones(win_len, dtype=float)
+        else:
+            raise ValueError(f"Unknown window '{window}'")
+        gate[start_idx:end_idx] = w
     return gate
 
 
-def apply_time_gate(H_f: np.ndarray,
-                    gate_t: np.ndarray,
-                    out_bin: Literal['dc', 'maxmag', 'carrier'] = 'dc',
-                    fs: Optional[float] = None,
-                    f_c: Optional[float] = None) -> float:
+def apply_time_gate(
+    H_f: np.ndarray,
+    gate_t: np.ndarray,
+    *,
+    normalize: bool = True,
+    out_bin: Literal["dc", "carrier", "full"] = "dc",
+    fs: float | None = None,
+    f_c: float | None = None,
+    return_complex: bool = False,
+) -> _t.Union[complex, float, np.ndarray]:
     """
-    IFFT -> time gate -> FFT -> return magnitude of selected bin (linear).
+    H_f: complex spectrum for one angle (shape [Nf] or [Nfft])
+    gate_t: real time window (length Nfft)
     """
-    Nfft = H_f.shape[0]
-    if gate_t.shape[0] != Nfft:
-        raise ValueError("gate_t and H_f must have same length")
+    H_f = np.asarray(H_f, dtype=np.complex128)
+    Nf = H_f.shape[0]
+    Nfft = int(gate_t.shape[0])
 
-    h_t = np.fft.ifft(H_f, n=Nfft)
-    h_t_g = h_t * gate_t
-    H_clean = np.fft.fft(h_t_g, n=Nfft)
-    mag = np.abs(H_clean)
+    # simple front-embed; replace with a freq→bin mapper if needed
+    H_embed = np.zeros(Nfft, dtype=np.complex128)
+    m = min(Nf, Nfft)
+    H_embed[:m] = H_f[:m]
 
-    if out_bin == 'dc':
-        return float(mag[0])
-    elif out_bin == 'maxmag':
-        return float(mag.max())
-    elif out_bin == 'carrier':
+    h_t = np.fft.ifft(H_embed, n=Nfft)
+    h_g = h_t * gate_t
+    H_clean = np.fft.fft(h_g, n=Nfft)
+
+    if normalize and H_clean.size:
+        peak = np.max(np.abs(H_clean))
+        if peak > 0:
+            H_clean = H_clean / peak
+
+    if out_bin == "dc":
+        val = H_clean[0]
+        return val if return_complex else float(np.abs(val))
+
+    if out_bin == "carrier":
         if fs is None or f_c is None:
-            raise ValueError("fs & f_c required for out_bin='carrier'")
-        dk = fs / Nfft
-        k = int(round(f_c / dk))
-        k = max(0, min(k, Nfft - 1))
-        return float(mag[k])
-    else:
-        raise ValueError(f"unknown out_bin '{out_bin}'.")
+            raise ValueError("carrier bin requested, but fs or f_c not provided")
+        df = fs / float(Nfft)
+        k = int(np.rint(f_c / df))
+        k = int(np.clip(k, 0, Nfft - 1))
+        val = H_clean[k]
+        return val if return_complex else float(np.abs(val))
+
+    # "full": return the whole spectrum
+    return H_clean if return_complex else np.abs(H_clean)
 
 
-def apply_time_gate_sweep(tot_freq_resp: np.ndarray,
-                          gate_t: np.ndarray,
-                          out_bin: Literal['dc', 'maxmag', 'carrier'] = 'dc',
-                          fs: Optional[float] = None,
-                          f_c: Optional[float] = None,
-                          normalize: bool = True) -> np.ndarray:
-    """
-    Sweep across angles (rows). Returns dB (optionally normalized to 0 dB peak).
-    """
-    if tot_freq_resp.ndim != 2:
-        raise ValueError("tot_freq_resp must be 2D (angles, fft)")
-    n_angles, Nfft = tot_freq_resp.shape
-    if gate_t.shape[0] != Nfft:
-        raise ValueError("gate_t's length has to match the Nfft")
+def apply_time_gate_sweep(
+    H_angles_freq: np.ndarray,
+    gate_t: np.ndarray,
+    *,
+    out_bin: Literal["dc", "carrier", "full"] = "dc",
+    fs: float | None = None,
+    f_c: float | None = None,
+    normalize: bool = True,
+    return_complex: bool = False,
+) -> np.ndarray:
+    """Apply the gate for each angle; returns vector (angles) or spectra stack if full."""
+    A = np.asarray(H_angles_freq, dtype=np.complex128)
+    Nangles = A.shape[0]
 
-    mags = np.empty(n_angles, dtype=float)
-    for i in range(n_angles):
-        mags[i] = apply_time_gate(
-            tot_freq_resp[i, :],
-            gate_t,
-            out_bin=out_bin,
-            fs=fs,
-            f_c=f_c
+    if out_bin == "full":
+        # return a stack of spectra (Nangles x Nfft)
+        out = np.zeros((Nangles, gate_t.shape[0]),
+                       dtype=np.complex128 if return_complex else float)
+        for i in range(Nangles):
+            out[i] = apply_time_gate(
+                A[i, :], gate_t,
+                normalize=normalize, out_bin="full",
+                fs=fs, f_c=f_c, return_complex=return_complex
+            )
+        return out
+
+    out = np.zeros(Nangles, dtype=np.complex128 if return_complex else float)
+    for i in range(Nangles):
+        out[i] = apply_time_gate(
+            A[i, :], gate_t,
+            normalize=normalize, out_bin=out_bin,
+            fs=fs, f_c=f_c, return_complex=return_complex
         )
-    dB = 20.0 * np.log10(np.maximum(mags, np.finfo(float).eps))
-    if normalize:
-        dB = dB - np.max(dB)
-    return dB
+    return out
 
 
-# --------------------- Wavelet denoise --------------------- #
-
+# ---------- wavelet denoise (optional) ----------
 def _auto_levels(n: int, name: str) -> int:
-    """Heuristic 3..6 levels depending on length."""
     if not _HAS_PYWT:
         return 5
     maxlev = pywt.dwt_max_level(data_len=n, filter_len=pywt.Wavelet(name).dec_len)
@@ -164,20 +180,13 @@ def wavelet_denoise_circ(x_db: np.ndarray,
                          rule: Literal['soft', 'hard'] = 'soft',
                          levels: Optional[int] = None,
                          cyclespin: int = 8) -> np.ndarray:
-    """
-    Circular-padding + (optional) cycle-spinning wavelet denoise.
-    """
     if not _HAS_PYWT:
         return np.asarray(x_db, dtype=np.complex128).copy()
 
-    x = np.asarray(x_db,dtype=np.complex128).ravel()
+    x = np.asarray(x_db, dtype=np.complex128).ravel()
     xpad = np.concatenate([x[-pad:], x, x[:pad]]) if pad > 0 else x.copy()
 
-    if domain.lower() == 'linear':
-        xwork = np.power(10.0, xpad / 20.0)
-    else:
-        xwork = xpad
-
+    xwork = 10.0**(xpad / 20.0) if domain.lower() == 'linear' else xpad
     if levels is None:
         levels = _auto_levels(len(xwork), name)
 
@@ -185,23 +194,18 @@ def wavelet_denoise_circ(x_db: np.ndarray,
         coeffs = pywt.wavedec(arr, name, mode='periodization', level=levels)
         detail = coeffs[-1]
         sigma = np.median(np.abs(detail)) / 0.6745 + 1e-12
-
         if method == 'bayes':
             thr = []
             for c in coeffs[1:]:
                 var = np.var(c) + 1e-12
                 t = sigma**2 / np.sqrt(var)
                 thr.append(t)
-            coeffs_d = [coeffs[0]]
-            for c, t in zip(coeffs[1:], thr):
-                coeffs_d.append(pywt.threshold(c, t, mode=rule))
-        else:
-            if method in ('universal', 'sure'):
-                t = sigma * np.sqrt(2.0 * np.log(arr.size))
-            else:
-                raise ValueError(f"Unknown method '{method}'")
             coeffs_d = [coeffs[0]] + [pywt.threshold(c, t, mode=rule) for c in coeffs[1:]]
-
+        else:
+            if method not in ('universal', 'sure'):
+                raise ValueError(f"Unknown method '{method}'")
+            t = sigma * np.sqrt(2.0 * np.log(arr.size))
+            coeffs_d = [coeffs[0]] + [pywt.threshold(c, t, mode=rule) for c in coeffs[1:]]
         return pywt.waverec(coeffs_d, name, mode='periodization')
 
     if cyclespin <= 0:
@@ -214,24 +218,25 @@ def wavelet_denoise_circ(x_db: np.ndarray,
             acc += np.roll(xd, -s)
         xden = acc / float(cyclespin)
 
-    if domain.lower() == 'linear':
-        xpad_d = 20.0 * np.log10(np.maximum(xden, np.finfo(float).eps))
-    else:
-        xpad_d = xden
-
-    out = xpad_d[pad:len(xpad_d)-pad] if pad > 0 else xpad_d
+    xpad_d = 20.0 * np.log10(np.maximum(xden, np.finfo(float).eps)) if domain.lower() == 'linear' else xden
+    out = xpad_d[pad:-pad] if pad > 0 else xpad_d
     out = out - np.max(out)
     return out
 
 
-#integration of new time-gating functions
-
+# ---------- legacy compatibility shims ----------
 def print_and_return_data(data):
     arr = np.asarray(data)
     if np.iscomplexobj(arr):
         arr = np.abs(arr)
-    plt.plot(arr)
-    plt.show()
+    try:
+        plt.figure()
+        plt.plot(arr)
+        plt.title("Raw data")
+        plt.grid(True)
+        plt.show()
+    except Exception:
+        pass
     return data
 
 
@@ -242,14 +247,17 @@ def format_data(data, num_freqs):
 
 
 def synthetic_pulse(frequencies, duration):
-    #Old code returned per-frequency qeights
-    #instead we FFT time-window of a duration of time at the specific frequency 
-    freqs = np.asarray(frequencies, dtype=np.complex128)
+    """
+    Legacy API: return per-frequency weights.
+    Implemented as magnitude of FFT{time-window of 'duration'} sampled at freqs.
+    """
+    freqs = np.asarray(frequencies, dtype=float)  # must be real
     Nf = len(freqs)
-    Nfft = next_pow2(max(1024, 4*Nf))
-    # pick a workable fs from the grid (robust fallback if spacing is uneven)
-    df_est = np.median(np.diff(np.sort(freqs))) if Nf > 1 else 1.0
-    fs = max(2.0*np.max(freqs), Nfft*max(df_est, 1.0))
+    Nfft = next_pow2(max(1024, 4 * Nf))
+
+    # pick a workable fs from the grid (robust for non-uniform spacing)
+    df_est = (np.median(np.diff(np.sort(freqs))) if Nf > 1 else 1.0)
+    fs = max(2.0 * float(np.max(freqs) if Nf else 1.0), Nfft * max(df_est, 1.0))
 
     gate_t = build_time_gate(fs=fs, Nfft=Nfft, t_start_s=0.0, t_end_s=float(duration),
                              window='tukey', tukey_alpha=0.5)
@@ -258,34 +266,27 @@ def synthetic_pulse(frequencies, duration):
 
     # map requested freqs to nearest rFFT bins
     df = fs / float(Nfft)
-    k = np.rint(np.clip(freqs/df, 0, (Nfft//2))).astype(int)
+    k = np.rint(np.clip(freqs / df, 0, (Nfft // 2))).astype(int)
     weights = mag[k]
     m = weights.max() if weights.size else 1.0
-    return weights/m if m > 0 else weights
+    return weights / m if m > 0 else weights
+
+
 def synthetic_output(pulse, data, num_freqs):
-    """Multiply angle×freq matrix by per-frequency weights."""
     A = np.asarray(data)
     if A.ndim == 1:
         A = format_data(A, num_freqs)
-    A = A.astype(np.complex128, copy=False)
-    w = np.asarray(pulse,dtype=np.complex128).reshape(1, -1)
+    A = A.astype(np.complex128, copy=False)   # keep complex
+    w = np.asarray(pulse, dtype=float).reshape(1, -1)
     if A.shape[1] != w.shape[1]:
         raise ValueError(f"Frequency dimension mismatch: data has {A.shape[1]}, pulse has {w.shape[1]}")
     return A * w
 
+
 def to_time_domain(data, num_freqs):
-    """
-    Legacy: IFFT along frequency axis to make time rows per angle.
-    Returns angles × time matrix.
-    """
     A = np.asarray(data)
     if A.ndim == 1:
         A = format_data(A, num_freqs)
     A = A.astype(np.complex128, copy=False)
-    td = np.fft.ifft(A, axis=1)
-    try:
-        plt.figure(); plt.plot(np.real(td[0,:])); plt.title("Time-domain (angle 0)"); plt.grid(True); plt.show()
-    except Exception:
-        pass
+    td = np.fft.ifft(A, axis=1)  # complex time domain
     return td
-
