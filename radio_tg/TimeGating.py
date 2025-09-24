@@ -135,3 +135,12 @@ def apply_time_gating_matrix(freq_resp: np.ndarray,
     # Normalize so peak = 0 dB
     pat_db = pat_db - np.max(pat_db) if pat_db.size else pat_db
     return pat_db
+
+def print_and_return_data(data):
+    """
+    Legacy helper for debugging.
+    Just print length and return unchanged.
+    """
+    arr = np.asarray(data, dtype=float)
+    print(f"[TimeGating] Data length: {arr.size}, dtype={arr.dtype}")
+    return arr
