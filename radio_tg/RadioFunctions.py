@@ -130,63 +130,41 @@ def do_single(Tx=True):
 #
 #------------------------------------------------------------------------------
 def do_singleTG(params):
-    #params=LoadParams()
-    Tx=True
-    
-    #create freq list based on params, needs to be 3 sig figs
-    freq_list = np.linspace(params["lower_frequency"],
-    	params["upper_frequency"], params["freq_steps"])
-    freq_list_round = np.zeros_like(freq_list) #round frequency array to 3 sig figs
-    for i,val in enumerate(freq_list):         #otherwise SDR will not measure data
-    	rounding_factor = -int(np.floor(np.log10(np.abs(val)))-2)
-    	freq_list_round[i] = round(val, rounding_factor)
-    freq_list = freq_list_round
-    rxd = np.array([])
-    rxd_i = np.array([])
-    for freq in freq_list:  #freq control
-    	if Tx:
-    	    radio_tx_graph = TxRadio.RadioFlowGraph(
-    	        params["tx_radio_id"], 
-    	        freq, 
-    	        params["tx_freq_offset"])
-    	radio_rx_graph = RxRadio.RadioFlowGraph(
-    	    params["rx_radio_id"], 
-    	    freq, 
-    	    params["rx_freq_offset"],
-    	    numSamples=10000)
-    	if Tx:
-    	    radio_tx_graph.start()
-    	radio_rx_graph.start()
-    	radio_rx_graph.wait()
-    	if Tx:
-    	    radio_tx_graph.stop()
-    	rxd1=rms(radio_rx_graph.vector_sink_0.data())
-    	rxd_i1=rms(radio_rx_graph.vector_sink_1.data())
-    	rxd = np.append(rxd,rxd1)
-    	rxd_i = np.append(rxd_i,rxd_i1)
-    complex_rxd = np.vectorize(complex)(rxd, rxd_i) #creats complex vector of RSSI measurements
-	
-    #post prossesing script does this better
-    TGavg = [[complex_rxd],[complex_rxd]]
-    TGavg = np.squeeze(np.array(TGavg).T)
-    pulses = TimeGating.synthetic_pulse(freq_list, 2.5e-8)
-    print(pulses.shape)
-    synth_out = TimeGating.synthetic_output(pulses, TGavg, params["freq_steps"])
-    flipped_synth_out = np.fliplr(synth_out)
-    double_sided_synth_out = np.concatenate((flipped_synth_out, synth_out), axis=0)
-    print(double_sided_synth_out.shape)
-    #TGantenna_data = TimeGating.to_time_domain(double_sided_synth_out, params["freq_steps"])
-    TGantenna_data = TimeGating.to_time_domain(synth_out, params["freq_steps"])
-    print(TGantenna_data.shape)
-    data = np.fft.fft(TGantenna_data[0,:])#, axis = 1)
-    print(data.shape)
-    plt.plot(data)
-    plt.show()
+    """
+    Simple bench test: sweep frequencies at a fixed pointing, time-gate the sweep,
+    and plot the resulting 'pattern' (single angle) just to sanity check the TG.
+    """
+    # build freq list (rounded + dedupe)
+    freq_lin = np.linspace(params["lower_frequency"], params["upper_frequency"], params["freq_steps"])
+    freq_list = np.unique(np.array([round_sig(v, 3) for v in freq_lin], dtype=float))
+    Nf = int(freq_list.size)
+    if Nf < 2:
+        print("Increase freq_steps/span: need ≥2 frequency points for time gating.")
+        return None
 
-#    plt.plot(rxd)
-#    plt.show()
-#    plt.plot(
-    return rms(rxd)
+    # collect complex mean per frequency (static antenna, no motor)
+    resp = np.zeros((1, Nf), dtype=np.complex128)
+    for i, f in enumerate(freq_list):
+        rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], f, params["rx_freq_offset"])
+        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], f, params["tx_freq_offset"])
+        tx.start(); time.sleep(1.5)
+        rx.start(); rx.wait()
+        I = np.array(rx.vector_sink_0.data(), dtype=float)
+        Q = np.array(rx.vector_sink_1.data(), dtype=float)
+        L = min(I.size, Q.size)
+        resp[0, i] = (I[:L] + 1j*Q[:L]).mean() if L else 0.0+0.0j
+        try: rx.stop(); rx.wait()
+        except: pass
+        try: tx.stop(); tx.wait()
+        except: pass
+
+    # time gate the 1×Nf sweep (fs inferred from df)
+    gate_width = float(params.get("tg_duration_s", 25e-9))
+    tg_db = TimeGating.apply_time_gating_matrix(resp, freq_list, gate_width_s=gate_width)
+
+    print("Time-gated (dB, peak=0):", tg_db.tolist())
+    return tg_db
+
 #------------------------------------------------------------------------------
 #
 #------------------------------------------------------------------------------
@@ -461,8 +439,11 @@ def do_AMTGscan(params):
     # --- time gating ---
     gate_width = float(params.get("tg_duration_s", 25e-9))
     print(f"Applying time gating with width {gate_width*1e9:.1f} ns …")
-    gated_db = TimeGating.apply_time_gating_matrix(responses, freq_list, gate_width_s=gate_width,
-                                                   pick='dc', denoise_wavelet=True)
+    gated_db = TimeGating.apply_time_gating_matrix(
+    responses, freq_list, gate_width_s=gate_width,
+    denoise_wavelet=True
+)
+
 
     # --- plot polar + cartesian (optional) ---
     deg = mast_angles
@@ -536,7 +517,11 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool 
     print("raw datafile closed")
 
     # --- Build patterns ---
-    noisy_db = 20*np.log10(np.abs(per_angle_complex)/np.max(np.abs(per_angle_complex)))
+    # noisy_db = 20*np.log10(np.abs(per_angle_complex)/np.max(np.abs(per_angle_complex)))
+    noisy_mag = np.abs(per_angle_complex)
+    noisy_mag /= (np.max(noisy_mag) if np.max(noisy_mag) > 0 else 1.0)
+    noisy_db = 20*np.log10(np.clip(noisy_mag, 1e-12, None))
+
 
     # shape it like [angles, freqs] with 1 frequency column
     freq_resp = per_angle_complex[:, np.newaxis]
@@ -550,6 +535,7 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 2.5e9, *, show_plots: bool 
     gated_pattern = TimeGating.extract_pattern(H_gated)
     gated_pattern = TimeGating.denoise_pattern(gated_pattern)
     gated_pattern -= np.max(gated_pattern)
+    
 
     # --- Plot ---
     if show_plots:
