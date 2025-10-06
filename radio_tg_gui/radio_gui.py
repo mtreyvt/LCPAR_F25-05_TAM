@@ -2,33 +2,16 @@
 """
 Graphical user interface for the Low‑Cost Portable Antenna Range radio system.
 
-This module provides a Tkinter‐based GUI that wraps the existing command
-line functionality in ``main.py`` and ``RadioFunctions.py``.  Users can
-initiate antenna measurements and scans, load parameter files, capture
-single samples, and visualize results without interacting through the
-terminal.  Results and status messages are streamed into a log box so
-long running operations do not block the interface.
-
-The GUI mirrors the menu options from the original CLI:
-
-1. FastScan (coherent AM, rotating)
-2. Measure (coherent AM, stepwise)
-3. Measure (Noise Subtraction)
-4. Plot last run data
-5. Plot data from file
-6. Plot data from two files
-7. Capture single measurement (Tx ON)
-8. Capture single background (Tx OFF)
-9. Time‑Gated Measure (coherent AM, stepwise)
-10. Time‑Gated FastScan (rotating, freq sweep)
-11. Time‑Gated single pointing (freq sweep, no rotation)
-12. Time‑Gated single frequency @ 2.5 GHz (rotating)
-13. Quit
-
-Selecting an operation spawns a worker thread so the GUI remains
-responsive.  Standard output from the underlying functions is captured
-and appended to the log panel.  When appropriate a measurement result
-is stored internally for later plotting.
+This module provides a Tkinter‑based GUI that wraps the functionality in
+``main.py`` and ``RadioFunctions.py``.  Users can initiate a variety of
+antenna measurements, load parameter files, capture single samples, and
+visualise results without interacting through the command line.  Messages
+produced by the underlying functions are streamed into a log box so long
+running operations do not freeze the interface.  The GUI mirrors the menu
+options from the original CLI and includes additional options to perform
+time‑synchronised single frequency scans with three gating modes: no
+gating, legacy Tukey gating and the new rectangular gating.  See the
+`NewTimeGating` module for details of the new algorithm.
 """
 
 from __future__ import annotations
@@ -43,8 +26,8 @@ from tkinter import ttk, filedialog, simpledialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 # Import project modules.  These imports assume this script is placed
-# alongside ``main.py`` in the ``radio_tg`` package.  If you move this
-# file elsewhere adjust the import paths accordingly.
+# alongside ``main.py`` in the ``radio_tg_gui`` package.  If you move
+# this file elsewhere adjust the import paths accordingly.
 try:
     import RadioFunctions
     from PlotGraph import PlotGraph
@@ -52,9 +35,10 @@ try:
 except ImportError as exc:
     raise ImportError(
         "Failed to import project modules. Ensure radio_gui.py resides in the "
-        "same package as main.py (e.g. radio_tg) and that the parent directory "
-        "is on PYTHONPATH."
+        "same package as main.py (e.g. radio_tg_gui) and that the parent "
+        "directory is on PYTHONPATH."
     ) from exc
+
 
 class RadioGUI:
     """Main application class for the radio system GUI."""
@@ -62,20 +46,17 @@ class RadioGUI:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
         self.master.title("LCPAR Radio System GUI")
-
         # Path to the JSON parameter file.  Default uses params.json in the
         # working directory.  Users may browse to a different file.
         self.param_file: str = os.path.join(os.getcwd(), "params.json")
-        self.last_data = None  # stores antenna data from the last scan/measure
-
+        # Store antenna data from the last measurement or scan for plotting
+        self.last_data = None
         # Create a queue for thread‑safe communication between worker threads
         # and the GUI.  Each message in the queue is a string to be appended
         # to the log panel.
         self._log_queue: queue.Queue[str] = queue.Queue()
-
         # Build the user interface
         self._build_ui()
-
         # Start periodic polling of the queue to update the log panel
         self.master.after(100, self._process_queue)
 
@@ -85,22 +66,19 @@ class RadioGUI:
         # Frame for parameter file selection
         param_frame = ttk.LabelFrame(self.master, text="Parameters")
         param_frame.pack(fill=tk.X, padx=10, pady=5)
-
         param_label = ttk.Label(param_frame, text="Parameter file:")
         param_label.pack(side=tk.LEFT, padx=(10, 5), pady=5)
-
         self.param_var = tk.StringVar(value=self.param_file)
         param_entry = ttk.Entry(param_frame, textvariable=self.param_var, width=50)
         param_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
-
         browse_btn = ttk.Button(param_frame, text="Browse…", command=self._browse_params)
         browse_btn.pack(side=tk.RIGHT, padx=(5, 10), pady=5)
-
         # Frame for the operation buttons
         btn_frame = ttk.LabelFrame(self.master, text="Operations")
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        # Define menu labels and associated handler methods
+        # Define menu labels and associated handler methods.  This list
+        # determines the order of buttons in the grid below.  New options
+        # for time‑synchronised single‑frequency scans are appended at the end.
         menu_items = [
             ("FastScan (coherent AM, rotating)", self._handle_fastscan),
             ("Measure (coherent AM, stepwise)", self._handle_measure),
@@ -114,10 +92,12 @@ class RadioGUI:
             ("Time‑Gated FastScan (rotating, freq sweep)", self._handle_am_tg_scan),
             ("Time‑Gated single pointing (freq sweep, no rotation)", self._handle_single_tg),
             ("Time‑Gated single frequency @ 2.5 GHz (rotating)", self._handle_single_freq_tg),
+            ("Time‑sync single freq (no gating)", self._handle_time_sync_no_tg),
+            ("Time‑sync single freq (Tukey gating)", self._handle_time_sync_tg_old),
+            ("Time‑sync single freq (Rect gating)", self._handle_time_sync_tg_new),
             ("Quit", self._quit_application),
         ]
-
-        # Create buttons in a grid.  Layout 3 columns to fit nicely.
+        # Create buttons in a grid.  Layout in 3 columns to fit nicely.
         cols = 3
         for idx, (label, handler) in enumerate(menu_items):
             row, col = divmod(idx, cols)
@@ -126,11 +106,9 @@ class RadioGUI:
         # Make columns expand evenly
         for c in range(cols):
             btn_frame.columnconfigure(c, weight=1)
-
         # Log panel to display status and measurement outputs
         log_frame = ttk.LabelFrame(self.master, text="Output Log")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
-
         self.log_text = ScrolledText(log_frame, wrap=tk.WORD, height=10, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -165,16 +143,30 @@ class RadioGUI:
         # Reschedule this method to run again after 100 ms
         self.master.after(100, self._process_queue)
 
-    def _run_task(self, func, *, args: tuple = (), kwargs: dict | None = None,
-                  description: str | None = None, callback=None) -> None:
+    def _run_task(
+        self,
+        func,
+        *,
+        args: tuple = (),
+        kwargs: dict | None = None,
+        description: str | None = None,
+        callback=None,
+    ) -> None:
         """
-        Execute a RadioFunctions method in a background thread.
+        Execute a ``RadioFunctions`` method in a background thread.
 
-        * ``func`` is the callable to invoke.
-        * ``args`` and ``kwargs`` are passed directly to ``func``.
-        * ``description`` is a human readable name used in log entries.
-        * ``callback`` is an optional function to call on the main thread
-          with the return value from ``func``.
+        Parameters
+        ----------
+        func : callable
+            The function to invoke.
+        args : tuple
+            Positional arguments passed to ``func``.
+        kwargs : dict, optional
+            Keyword arguments passed to ``func``.
+        description : str, optional
+            Human readable name used in log entries.
+        callback : callable, optional
+            Function to call on the main thread with the return value from ``func``.
         """
         if kwargs is None:
             kwargs = {}
@@ -200,7 +192,7 @@ class RadioGUI:
             if out:
                 for line in out.strip().splitlines():
                     self._log_queue.put(line)
-            # Record return value and call callback on main thread
+            # Record return value and call callback on main thread if provided
             if callback is not None:
                 self.master.after(0, callback, result)
             # For simple scalar results, display them directly
@@ -227,24 +219,18 @@ class RadioGUI:
 
     def _handle_fastscan(self) -> None:
         params = self._load_params()
-        self._run_task(RadioFunctions.do_AMscan, args=(params,),
-                       description="FastScan (AM scan)",
-                       callback=self._update_last_data)
+        self._run_task(RadioFunctions.do_AMscan, args=(params,), description="FastScan (AM scan)", callback=self._update_last_data)
 
     def _handle_measure(self) -> None:
         params = self._load_params()
-        self._run_task(RadioFunctions.do_AMmeas, args=(params,),
-                       description="Measure (AM)",
-                       callback=self._update_last_data)
+        self._run_task(RadioFunctions.do_AMmeas, args=(params,), description="Measure (AM)", callback=self._update_last_data)
 
     def _handle_ns_measure(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_NSmeas'):
             messagebox.showerror("Not Implemented", "Noise subtraction measurement is not available.")
             return
-        self._run_task(RadioFunctions.do_NSmeas, args=(params,),
-                       description="Measure (Noise Subtraction)",
-                       callback=self._update_last_data)
+        self._run_task(RadioFunctions.do_NSmeas, args=(params,), description="Measure (Noise Subtraction)", callback=self._update_last_data)
 
     def _handle_plot_last(self) -> None:
         if not self.last_data:
@@ -254,38 +240,40 @@ class RadioGUI:
         title = simpledialog.askstring("Plot Title", "Enter a title for the graph:")
         if not title:
             return
+
         def plot_task():
             pg = PlotGraph(self.last_data, title)
             pg.show()
+
         self._run_task(plot_task, description="Plotting last run data")
 
     def _handle_plot_file(self) -> None:
         filename = filedialog.askopenfilename(
-            title="Select data file to plot",
-            filetypes=[("CSV/Text files", "*.*")],
+            title="Select data file to plot", filetypes=[("CSV/Text files", "*.*")]
         )
         if not filename:
             return
+
         def plot_file_task():
             with open(filename, 'r') as fr:
                 lines = fr.readlines()
             # skip notes and header
-            if len(lines) >= 2:
-                lines = lines[2:]
+            lines = lines[2:] if len(lines) >= 2 else lines
             file_data = RadioFunctions.get_plot_data(lines)
             pg = PlotGraph(file_data, os.path.basename(filename))
             pg.show()
+
         self._run_task(plot_file_task, description=f"Plotting {os.path.basename(filename)}")
 
     def _handle_plot_two_files(self) -> None:
         filenames = filedialog.askopenfilenames(
-            title="Select two data files to plot",
-            filetypes=[("CSV/Text files", "*.*")],
+            title="Select two data files to plot", filetypes=[("CSV/Text files", "*.*")]
         )
         if not filenames or len(filenames) < 2:
             messagebox.showinfo("Selection Error", "Please select two files.")
             return
         file1, file2 = filenames[:2]
+
         def plot_two_task():
             # Load first file
             with open(file1, 'r') as fr:
@@ -313,41 +301,37 @@ class RadioGUI:
             ax.legend(loc="best")
             ax.set_title("Comparison of two measurements", va='bottom')
             plt.show()
+
         self._run_task(plot_two_task, description="Plotting two files")
 
     def _handle_single_tx(self) -> None:
         # Capture a single measurement with transmitter on
-        self._run_task(RadioFunctions.do_single, kwargs={"Tx": True},
-                       description="Single measurement (Tx ON)")
+        self._run_task(RadioFunctions.do_single, kwargs={"Tx": True}, description="Single measurement (Tx ON)")
 
     def _handle_single_rx(self) -> None:
         # Capture a single background measurement with transmitter off
-        self._run_task(RadioFunctions.do_single, kwargs={"Tx": False},
-                       description="Single background (Tx OFF)")
+        self._run_task(RadioFunctions.do_single, kwargs={"Tx": False}, description="Single background (Tx OFF)")
 
     def _handle_am_tg_meas(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_AMTGmeas'):
             messagebox.showerror("Not Implemented", "Time‑Gated Measure function is not available.")
             return
-        self._run_task(RadioFunctions.do_AMTGmeas, args=(params,),
-                       description="Time‑Gated Measure", callback=self._update_last_data)
+        self._run_task(RadioFunctions.do_AMTGmeas, args=(params,), description="Time‑Gated Measure", callback=self._update_last_data)
 
     def _handle_am_tg_scan(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_AMTGscan'):
             messagebox.showerror("Not Implemented", "Time‑Gated FastScan function is not available.")
             return
-        self._run_task(RadioFunctions.do_AMTGscan, args=(params,),
-                       description="Time‑Gated FastScan", callback=self._update_last_data)
+        self._run_task(RadioFunctions.do_AMTGscan, args=(params,), description="Time‑Gated FastScan", callback=self._update_last_data)
 
     def _handle_single_tg(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_singleTG'):
             messagebox.showerror("Not Implemented", "Single pointing time‑gated function is not available.")
             return
-        self._run_task(RadioFunctions.do_singleTG, args=(params,),
-                       description="Single pointing TG", callback=self._update_last_data)
+        self._run_task(RadioFunctions.do_singleTG, args=(params,), description="Single pointing TG", callback=self._update_last_data)
 
     def _handle_single_freq_tg(self) -> None:
         params = self._load_params()
@@ -355,10 +339,53 @@ class RadioGUI:
             messagebox.showerror("Not Implemented", "Single frequency time‑gated scan function is not available.")
             return
         # default frequency 2.5 GHz and show_plots=True to mimic CLI
-        self._run_task(RadioFunctions.do_AMTGscan_single_freq,
-                       args=(params,),
-                       kwargs={"freq_hz": 2.5e9, "show_plots": True},
-                       description="Single frequency TG scan", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_AMTGscan_single_freq,
+            args=(params,),
+            kwargs={"freq_hz": 2.5e9, "show_plots": True},
+            description="Single frequency TG scan",
+            callback=self._update_last_data,
+        )
+
+    # New handlers for time‑synchronised single‑frequency scans
+    def _handle_time_sync_no_tg(self) -> None:
+        params = self._load_params()
+        if not hasattr(RadioFunctions, 'do_time_sync_no_tg'):
+            messagebox.showerror("Not Implemented", "Time‑sync single freq (no gating) is not available.")
+            return
+        self._run_task(
+            RadioFunctions.do_time_sync_no_tg,
+            args=(params,),
+            kwargs={"freq_hz": 2.5e9, "show_plots": True},
+            description="Time‑sync single freq (no gating)",
+            callback=self._update_last_data,
+        )
+
+    def _handle_time_sync_tg_old(self) -> None:
+        params = self._load_params()
+        if not hasattr(RadioFunctions, 'do_time_sync_tg_old'):
+            messagebox.showerror("Not Implemented", "Time‑sync single freq (Tukey gating) is not available.")
+            return
+        self._run_task(
+            RadioFunctions.do_time_sync_tg_old,
+            args=(params,),
+            kwargs={"freq_hz": 2.5e9, "show_plots": True},
+            description="Time‑sync single freq (Tukey gating)",
+            callback=self._update_last_data,
+        )
+
+    def _handle_time_sync_tg_new(self) -> None:
+        params = self._load_params()
+        if not hasattr(RadioFunctions, 'do_time_sync_tg_new'):
+            messagebox.showerror("Not Implemented", "Time‑sync single freq (Rect gating) is not available.")
+            return
+        self._run_task(
+            RadioFunctions.do_time_sync_tg_new,
+            args=(params,),
+            kwargs={"freq_hz": 2.5e9, "show_plots": True},
+            description="Time‑sync single freq (Rect gating)",
+            callback=self._update_last_data,
+        )
 
     def _quit_application(self) -> None:
         """Close the application."""
