@@ -129,125 +129,41 @@ def do_single(Tx=True):
 #------------------------------------------------------------------------------
 #
 #------------------------------------------------------------------------------
-# --- add these helpers somewhere in RadioFunctions.py ---
-
-def _moving_rms(x: np.ndarray, win: int) -> np.ndarray:
-    """Moving RMS envelope (real array)."""
-    if win <= 1:
-        return np.abs(x)
-    # real-valued for speed; pad so output length == input length
-    mag2 = np.abs(x)**2
-    ker  = np.ones(win, dtype=float) / float(win)
-    m = np.sqrt(np.convolve(mag2, ker, mode="same"))
-    return m
-
-def _find_tx_on_edge(x: np.ndarray, win: int = 256, k_sigma: float = 6.0) -> int:
+def do_singleTG(params):
     """
-    Detect first 'TX-ON' edge: moving-RMS rises above baseline+K*std.
-    Returns index (int). Falls back to global-peak if no edge is found.
+    Simple bench test: sweep frequencies at a fixed pointing, time-gate the sweep,
+    and plot the resulting 'pattern' (single angle) just to sanity check the TG.
     """
-    env = _moving_rms(x, win)
-    # Use the first 10% of the trace as noise baseline
-    n0 = max(win, int(0.10 * len(env)))
-    base = env[:n0]
-    mu, sigma = float(np.mean(base)), float(np.std(base) + 1e-12)
-    thr = mu + k_sigma * sigma
-    idx = int(np.argmax(env > thr))  # 0 if never true
-    if env[idx] <= thr:               # fallback: take strongest point
-        idx = int(np.argmax(env))
-    return idx
+    # build freq list (rounded + dedupe)
+    freq_lin = np.linspace(params["lower_frequency"], params["upper_frequency"], params["freq_steps"])
+    freq_list = np.unique(np.array([round_sig(v, 3) for v in freq_lin], dtype=float))
+    Nf = int(freq_list.size)
+    if Nf < 2:
+        print("Increase freq_steps/span: need ≥2 frequency points for time gating.")
+        return None
 
-# --- REPLACE your existing do_single() with the version below ---
+    # collect complex mean per frequency (static antenna, no motor)
+    resp = np.zeros((1, Nf), dtype=np.complex128)
+    for i, f in enumerate(freq_list):
+        rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], f, params["rx_freq_offset"])
+        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], f, params["tx_freq_offset"])
+        tx.start(); time.sleep(1.5)
+        rx.start(); rx.wait()
+        I = np.array(rx.vector_sink_0.data(), dtype=float)
+        Q = np.array(rx.vector_sink_1.data(), dtype=float)
+        L = min(I.size, Q.size)
+        resp[0, i] = (I[:L] + 1j*Q[:L]).mean() if L else 0.0+0.0j
+        try: rx.stop(); rx.wait()
+        except: pass
+        try: tx.stop(); tx.wait()
+        except: pass
 
-def do_single(Tx: bool = True,
-              *,
-              use_time_sync: bool = True,
-              rx_num_samples: int | None = 10000,
-              pre_tx_delay_s: float = 0.25,
-              edge_win: int = 256,
-              edge_k_sigma: float = 6.0,
-              plot: bool = True):
-    """
-    Capture a single complex burst. If Tx=True and use_time_sync=True, align
-    the capture to the TX-on edge using a moving-RMS detector.
+    # time gate the 1×Nf sweep (fs inferred from df)
+    gate_width = float(params.get("tg_duration_s", 25e-9))
+    tg_db = TimeGating.apply_time_gating_matrix(resp, freq_list, gate_width_s=gate_width)
 
-    Returns:
-        rms_val : float
-            RMS of the **aligned complex magnitude** (not just I).
-    """
-    params = LoadParams()
-
-    # Build graphs
-    if Tx:
-        radio_tx_graph = TxRadio.RadioFlowGraph(
-            params["tx_radio_id"],
-            params["frequency"],
-            params["tx_freq_offset"]
-        )
-    radio_rx_graph = RxRadio.RadioFlowGraph(
-        params["rx_radio_id"],
-        params["frequency"],
-        params["rx_freq_offset"],
-        numSamples=(rx_num_samples or 10000)
-    )
-
-    # Start/stop order depends on whether we're syncing to TX edge
-    if use_time_sync and Tx:
-        # 1) Start RX first to get pre-roll noise
-        radio_rx_graph.start()
-        # 2) After a short delay, turn TX on so we see a rising edge
-        time.sleep(max(0.05, pre_tx_delay_s))
-        radio_tx_graph.start()
-        # 3) Let RX finish its programmed capture
-        radio_rx_graph.wait()
-        # 4) Stop TX once RX has what it needs
-        radio_tx_graph.stop(); radio_tx_graph.wait()
-    else:
-        # Original simple path
-        if Tx: radio_tx_graph.start()
-        radio_rx_graph.start()
-        radio_rx_graph.wait()
-        if Tx: radio_tx_graph.stop(); radio_tx_graph.wait()
-
-    # Fetch data
-    I = np.array(radio_rx_graph.vector_sink_0.data(), dtype=float)
-    Q = np.array(radio_rx_graph.vector_sink_1.data(), dtype=float)
-    L = int(min(I.size, Q.size))
-    if L == 0:
-        print("No samples received.")
-        return 0.0
-    x = I[:L] + 1j * Q[:L]
-
-    # Time-sync (align to TX-on edge) if requested
-    if use_time_sync and Tx:
-        i0 = _find_tx_on_edge(x, win=edge_win, k_sigma=edge_k_sigma)
-        # keep a reasonably sized window following the edge
-        keep = max(edge_win * 8, int(0.5 * L))
-        i1 = min(L, i0 + keep)
-        x_aligned = x[i0:i1]
-    else:
-        x_aligned = x
-
-    # Plot (magnitude envelope + detected edge)
-    if plot:
-        env = _moving_rms(x, max(8, edge_win // 4))
-        t  = np.arange(L)
-        plt.figure(figsize=(10, 4))
-        plt.plot(t, 20*np.log10(np.maximum(env/np.max(env), 1e-12)), lw=1.2)
-        if use_time_sync and Tx:
-            plt.axvline(i0, color='orange', lw=1.2, linestyle='--', label='TX-on (detected)')
-        plt.grid(True)
-        plt.xlabel("Sample")
-        plt.ylabel("Envelope (dB, norm)")
-        plt.title("Single capture – time sync" if (use_time_sync and Tx) else "Single capture")
-        if use_time_sync and Tx: plt.legend(loc="best")
-        plt.tight_layout()
-        plt.show()
-
-    # Return RMS of the aligned **complex magnitude**
-    rms_val = float(np.sqrt(np.mean(np.abs(x_aligned)**2)))
-    return rms_val
-
+    print("Time-gated (dB, peak=0):", tg_db.tolist())
+    return tg_db
 
 #------------------------------------------------------------------------------
 #
@@ -554,10 +470,29 @@ def do_AMTGscan(params):
 
     return list(zip(deg.tolist(), [0.0]*len(deg), [0.0]*len(deg), y_lin.tolist()))
 
-def do_AMTGscan_single_freq(params, freq_hz: float = 5.6e9, *, show_plots: bool = True):
+def do_AMTGscan_single_freq(params, freq_hz: float = 5.6e9, *, show_plots: bool = True,
+                             pre_tx_delay_s: float = 0.25,
+                             edge_win: int = 256,
+                             edge_k_sigma: float = 6.0):
     import TimeGating
     from PolarPlot import plot_polar_patterns
     import numpy as np, time
+
+    def _moving_rms(x: np.ndarray, win: int) -> np.ndarray:
+        if win <= 1:
+            return np.abs(x)
+        mag2 = np.abs(x)**2
+        ker  = np.ones(win, dtype=float) / float(win)
+        return np.sqrt(np.convolve(mag2, ker, mode="same"))
+
+    def _find_tx_on_edge(x: np.ndarray, win: int = 256, k_sigma: float = 6.0) -> int:
+        env = _moving_rms(x, win)
+        n0  = max(win, int(0.10 * len(env)))  # first 10% as noise baseline
+        base = env[:n0]
+        mu, sigma = float(base.mean()), float(base.std() + 1e-12)
+        thr = mu + k_sigma * sigma
+        idx = np.where(env > thr)[0]
+        return int(idx[0]) if idx.size else int(np.argmax(env))
 
     motor_controller = InitMotor(params)
     datafile = OpenDatafile(params)
@@ -565,34 +500,75 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 5.6e9, *, show_plots: bool 
     # one frequency (rounded to 3 sig figs for the SDR)
     freq = float(round_sig(freq_hz, 3))
 
-    mast_start = float(params["mast_start_angle"])
-    mast_end   = float(params["mast_end_angle"])
-    mast_steps = int(params["mast_steps"])
+    mast_start = float(params["mast_start_angle"])  # degrees
+    mast_end   = float(params["mast_end_angle"])    # degrees
+    mast_steps = int(params["mast_steps"])          # bins
     mast_angles = np.linspace(mast_start, mast_end, mast_steps, endpoint=False, dtype=float)
 
     rx = tx = None
     per_angle_complex = None
     try:
+        # Move to start angle and prepare graphs
+        motor_controller.rotate_mast(mast_start)
         rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], freq, params["rx_freq_offset"])
-        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])
+        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], freq, params["tx_freq_offset"])        
 
+        # --- Software time-sync sequence ---
+        # 1) Start RX first to get pre-roll at mast_start
+        rx.start()
+        # 2) After short delay, start TX so we can detect the TX-on edge
+        time.sleep(max(0.05, float(pre_tx_delay_s)))
         tx.start()
-        time.sleep(3)
-
+        # 3) Begin rotation while RX is running
         print(f"Single-frequency scan @ {freq/1e9:.3f} GHz: rotating & collecting …")
-        per_angle_complex = _collect_complex_per_angle(rx, mast_start, mast_end, mast_steps, motor_controller)
+        motor_controller.rotate_mast(mast_end)
+        # 4) Stop RX and TX once rotation completes
+        rx.stop(); rx.wait()
+        tx.stop(); tx.wait()
+
+        # --- Fetch raw complex stream ---
+        I = np.array(rx.vector_sink_0.data(), dtype=float)
+        Q = np.array(rx.vector_sink_1.data(), dtype=float)
+        L = int(min(I.size, Q.size))
+        if L == 0:
+            print("No samples received.")
+            return {"angles_deg": mast_angles.tolist(),
+                    "complex_per_angle": [],
+                    "noisy_db": [],
+                    "tg_db": []}
+        samps = I[:L] + 1j*Q[:L]
+
+        # --- Detect TX-on edge in the stream, trim to aligned segment ---
+        i0 = _find_tx_on_edge(samps, win=int(edge_win), k_sigma=float(edge_k_sigma))
+        # Keep from the edge to the end; if too short, fall back to full
+        if (L - i0) >= max(1024, mast_steps * 8):
+            samps = samps[i0:]
+        else:
+            print("WARNING: short post-edge segment; using full buffer.")
+
+        # --- Bin the aligned samples uniformly into mast_steps means ---
+        idx = np.linspace(0, len(samps), mast_steps + 1, dtype=int)
+        per_angle = np.zeros(mast_steps, dtype=np.complex128)
+        for i in range(mast_steps):
+            s, e = idx[i], idx[i+1]
+            seg = samps[s:e] if e > s else samps[s:s+1]
+            per_angle[i] = seg.mean()
+        per_angle_complex = per_angle
 
     finally:
-        # cleanup
+        # cleanup (best-effort)
         try:
             if rx: rx.stop(); rx.wait()
-        except Exception: pass
+        except Exception:
+            pass
         try:
             if tx: tx.stop(); tx.wait()
-        except Exception: pass
+        except Exception:
+            pass
         try:
             motor_controller.rotate_mast(0)
-        except Exception: pass
+        except Exception:
+            pass
 
     # write raw complex per-angle data
     for ang, cval in zip(mast_angles, per_angle_complex):
@@ -601,27 +577,22 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 5.6e9, *, show_plots: bool 
     print("raw datafile closed")
 
     # --- Build patterns ---
-    # noisy_db = 20*np.log10(np.abs(per_angle_complex)/np.max(np.abs(per_angle_complex)))
     noisy_mag = np.abs(per_angle_complex)
     noisy_mag /= (np.max(noisy_mag) if np.max(noisy_mag) > 0 else 1.0)
     noisy_db = 20*np.log10(np.clip(noisy_mag, 1e-12, None))
 
-
-    # shape it like [angles, freqs] with 1 frequency column
+    # With a single frequency column, the time-gating block is largely a no-op,
+    # but we keep the call structure for consistency/plotting.
     freq_resp = per_angle_complex[:, np.newaxis]
-
-    fs = float(params.get("fs", 200e6))   # sample rate
-    N_fft = 2048                          # tunable
-
+    fs = float(params.get("fs", 200e6))
+    N_fft = 2048
     h_t = TimeGating.impulse_response(freq_resp, N_fft)
     h_t_gated = TimeGating.apply_time_gate(h_t, fs, gate_ns=3.75, alpha=0.4)
     H_gated = TimeGating.gated_frequency_response(h_t_gated, N_fft)
     gated_pattern = TimeGating.extract_pattern(H_gated)
     gated_pattern = TimeGating.denoise_pattern(gated_pattern)
     gated_pattern -= np.max(gated_pattern)
-    
 
-    # --- Plot ---
     if show_plots:
         plot_polar_patterns(
             mast_angles,
@@ -639,6 +610,7 @@ def do_AMTGscan_single_freq(params, freq_hz: float = 5.6e9, *, show_plots: bool 
         "noisy_db": noisy_db.tolist(),
         "tg_db": gated_pattern.tolist(),
     }
+
 
 
         
