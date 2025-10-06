@@ -129,41 +129,125 @@ def do_single(Tx=True):
 #------------------------------------------------------------------------------
 #
 #------------------------------------------------------------------------------
-def do_singleTG(params):
+# --- add these helpers somewhere in RadioFunctions.py ---
+
+def _moving_rms(x: np.ndarray, win: int) -> np.ndarray:
+    """Moving RMS envelope (real array)."""
+    if win <= 1:
+        return np.abs(x)
+    # real-valued for speed; pad so output length == input length
+    mag2 = np.abs(x)**2
+    ker  = np.ones(win, dtype=float) / float(win)
+    m = np.sqrt(np.convolve(mag2, ker, mode="same"))
+    return m
+
+def _find_tx_on_edge(x: np.ndarray, win: int = 256, k_sigma: float = 6.0) -> int:
     """
-    Simple bench test: sweep frequencies at a fixed pointing, time-gate the sweep,
-    and plot the resulting 'pattern' (single angle) just to sanity check the TG.
+    Detect first 'TX-ON' edge: moving-RMS rises above baseline+K*std.
+    Returns index (int). Falls back to global-peak if no edge is found.
     """
-    # build freq list (rounded + dedupe)
-    freq_lin = np.linspace(params["lower_frequency"], params["upper_frequency"], params["freq_steps"])
-    freq_list = np.unique(np.array([round_sig(v, 3) for v in freq_lin], dtype=float))
-    Nf = int(freq_list.size)
-    if Nf < 2:
-        print("Increase freq_steps/span: need ≥2 frequency points for time gating.")
-        return None
+    env = _moving_rms(x, win)
+    # Use the first 10% of the trace as noise baseline
+    n0 = max(win, int(0.10 * len(env)))
+    base = env[:n0]
+    mu, sigma = float(np.mean(base)), float(np.std(base) + 1e-12)
+    thr = mu + k_sigma * sigma
+    idx = int(np.argmax(env > thr))  # 0 if never true
+    if env[idx] <= thr:               # fallback: take strongest point
+        idx = int(np.argmax(env))
+    return idx
 
-    # collect complex mean per frequency (static antenna, no motor)
-    resp = np.zeros((1, Nf), dtype=np.complex128)
-    for i, f in enumerate(freq_list):
-        rx = RxRadio.RadioFlowGraph(params["rx_radio_id"], f, params["rx_freq_offset"])
-        tx = TxRadio.RadioFlowGraph(params["tx_radio_id"], f, params["tx_freq_offset"])
-        tx.start(); time.sleep(1.5)
-        rx.start(); rx.wait()
-        I = np.array(rx.vector_sink_0.data(), dtype=float)
-        Q = np.array(rx.vector_sink_1.data(), dtype=float)
-        L = min(I.size, Q.size)
-        resp[0, i] = (I[:L] + 1j*Q[:L]).mean() if L else 0.0+0.0j
-        try: rx.stop(); rx.wait()
-        except: pass
-        try: tx.stop(); tx.wait()
-        except: pass
+# --- REPLACE your existing do_single() with the version below ---
 
-    # time gate the 1×Nf sweep (fs inferred from df)
-    gate_width = float(params.get("tg_duration_s", 25e-9))
-    tg_db = TimeGating.apply_time_gating_matrix(resp, freq_list, gate_width_s=gate_width)
+def do_single(Tx: bool = True,
+              *,
+              use_time_sync: bool = True,
+              rx_num_samples: int | None = 10000,
+              pre_tx_delay_s: float = 0.25,
+              edge_win: int = 256,
+              edge_k_sigma: float = 6.0,
+              plot: bool = True):
+    """
+    Capture a single complex burst. If Tx=True and use_time_sync=True, align
+    the capture to the TX-on edge using a moving-RMS detector.
 
-    print("Time-gated (dB, peak=0):", tg_db.tolist())
-    return tg_db
+    Returns:
+        rms_val : float
+            RMS of the **aligned complex magnitude** (not just I).
+    """
+    params = LoadParams()
+
+    # Build graphs
+    if Tx:
+        radio_tx_graph = TxRadio.RadioFlowGraph(
+            params["tx_radio_id"],
+            params["frequency"],
+            params["tx_freq_offset"]
+        )
+    radio_rx_graph = RxRadio.RadioFlowGraph(
+        params["rx_radio_id"],
+        params["frequency"],
+        params["rx_freq_offset"],
+        numSamples=(rx_num_samples or 10000)
+    )
+
+    # Start/stop order depends on whether we're syncing to TX edge
+    if use_time_sync and Tx:
+        # 1) Start RX first to get pre-roll noise
+        radio_rx_graph.start()
+        # 2) After a short delay, turn TX on so we see a rising edge
+        time.sleep(max(0.05, pre_tx_delay_s))
+        radio_tx_graph.start()
+        # 3) Let RX finish its programmed capture
+        radio_rx_graph.wait()
+        # 4) Stop TX once RX has what it needs
+        radio_tx_graph.stop(); radio_tx_graph.wait()
+    else:
+        # Original simple path
+        if Tx: radio_tx_graph.start()
+        radio_rx_graph.start()
+        radio_rx_graph.wait()
+        if Tx: radio_tx_graph.stop(); radio_tx_graph.wait()
+
+    # Fetch data
+    I = np.array(radio_rx_graph.vector_sink_0.data(), dtype=float)
+    Q = np.array(radio_rx_graph.vector_sink_1.data(), dtype=float)
+    L = int(min(I.size, Q.size))
+    if L == 0:
+        print("No samples received.")
+        return 0.0
+    x = I[:L] + 1j * Q[:L]
+
+    # Time-sync (align to TX-on edge) if requested
+    if use_time_sync and Tx:
+        i0 = _find_tx_on_edge(x, win=edge_win, k_sigma=edge_k_sigma)
+        # keep a reasonably sized window following the edge
+        keep = max(edge_win * 8, int(0.5 * L))
+        i1 = min(L, i0 + keep)
+        x_aligned = x[i0:i1]
+    else:
+        x_aligned = x
+
+    # Plot (magnitude envelope + detected edge)
+    if plot:
+        env = _moving_rms(x, max(8, edge_win // 4))
+        t  = np.arange(L)
+        plt.figure(figsize=(10, 4))
+        plt.plot(t, 20*np.log10(np.maximum(env/np.max(env), 1e-12)), lw=1.2)
+        if use_time_sync and Tx:
+            plt.axvline(i0, color='orange', lw=1.2, linestyle='--', label='TX-on (detected)')
+        plt.grid(True)
+        plt.xlabel("Sample")
+        plt.ylabel("Envelope (dB, norm)")
+        plt.title("Single capture – time sync" if (use_time_sync and Tx) else "Single capture")
+        if use_time_sync and Tx: plt.legend(loc="best")
+        plt.tight_layout()
+        plt.show()
+
+    # Return RMS of the aligned **complex magnitude**
+    rms_val = float(np.sqrt(np.mean(np.abs(x_aligned)**2)))
+    return rms_val
+
 
 #------------------------------------------------------------------------------
 #
