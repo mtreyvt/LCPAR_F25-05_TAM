@@ -27,23 +27,59 @@ def main() -> None:
     # user should preload measurement parameters in "params.json"
     param_filename = "params.json"
     # -------- Menu text (aligned with function calls below) --------
+    # Menu choices with clearer descriptions.  Each entry
+    # indicates the measurement type and whether time gating is applied.
     menu_choices: list[str] = []
-    menu_choices.append("FastScan (coherent AM, rotating)")            # 1 -> do_AMscan
-    menu_choices.append("Measure (coherent AM, stepwise)")            # 2 -> do_AMmeas
-    menu_choices.append("Measure (Noise Subtraction)")                 # 3 -> do_NSmeas
-    menu_choices.append("Plot last run data")                          # 4
-    menu_choices.append("Plot data from file")                        # 5
-    menu_choices.append("Plot data from two files")                   # 6
-    menu_choices.append("Capture single measurement (Tx ON)")         # 7 -> do_single(Tx=True)
-    menu_choices.append("Capture single background (Tx OFF)")        # 8 -> do_single(Tx=False)
-    menu_choices.append("Time-Gated Measure (coherent AM, stepwise)") # 9 -> do_AMTGmeas
-    menu_choices.append("Time-Gated FastScan (rotating, freq SWEEP)") # 10 -> do_AMTGscan
-    menu_choices.append("Time-Gated single pointing (freq SWEEP, no rotation)") # 11 -> do_singleTG
-    menu_choices.append("Time-Gated single frequency @ 2.5 GHz (rotating)")    # 12 -> do_AMTGscan_single_freq
-    menu_choices.append("Time-sync single freq (no gating)")          # 13 -> do_time_sync_no_tg
-    menu_choices.append("Time-sync single freq (Tukey gating)")       # 14 -> do_time_sync_tg_old
-    menu_choices.append("Time-sync single freq (Rect gating)")        # 15 -> do_time_sync_tg_new
-    menu_choices.append("Quit")                                       # 16
+    # 1. Continuous scan of AM amplitude (FastScan) with no time gating.
+    menu_choices.append(
+        "Continuous AM Scan (FastScan, rotating – no gating)"
+    )
+    # 2. Stepwise AM amplitude measurement with no time gating.
+    menu_choices.append(
+        "Stepwise AM Measurement (no gating)"
+    )
+    # 3. Noise subtraction measurement (not yet implemented in GUI).
+    menu_choices.append("Noise Subtraction Measurement (stub)")
+    # 4. Plot the data from the last run.
+    menu_choices.append("Plot last run data")
+    # 5. Plot data from a file.
+    menu_choices.append("Plot data from file")
+    # 6. Plot data from two files for comparison.
+    menu_choices.append("Plot data from two files")
+    # 7. Capture a single measurement with the transmitter on.
+    menu_choices.append("Capture single measurement (Tx ON)")
+    # 8. Capture a single background measurement with the transmitter off.
+    menu_choices.append("Capture single background measurement (Tx OFF)")
+    # 9. Legacy time‑gated AM measurement (stepwise) using Tukey window (supervised gating).
+    menu_choices.append(
+        "Legacy Time‑Gated AM Measurement – Stepwise (Tukey gating – supervised)"
+    )
+    # 10. Legacy time‑gated AM FastScan (continuous sweep) using Tukey window (supervised gating).
+    menu_choices.append(
+        "Legacy Time‑Gated AM FastScan – Continuous (Tukey gating – supervised)"
+    )
+    # 11. Legacy time‑gated single‑point frequency sweep (no rotation) using Tukey window (supervised).
+    menu_choices.append(
+        "Legacy Time‑Gated Single‑Point Sweep – (Tukey gating – supervised)"
+    )
+    # 12. Legacy time‑gated single frequency measurement at 2.5 GHz using Tukey window (supervised).
+    menu_choices.append(
+        "Legacy Time‑Gated Single Frequency @ 2.5 GHz (Tukey gating – supervised)"
+    )
+    # 13. Time‑synchronised single‑frequency scan with no time gating.
+    menu_choices.append(
+        "Time‑Sync Single Frequency – no gating"
+    )
+    # 14. Time‑synchronised single‑frequency scan with legacy Tukey gating (supervised).
+    menu_choices.append(
+        "Time‑Sync Single Frequency – Legacy Tukey gating (supervised)"
+    )
+    # 15. Time‑synchronised single‑frequency scan with the new unsupervised rectangular gating.
+    menu_choices.append(
+        "Time‑Sync Single Frequency – Unsupervised Rectangular gating (new)"
+    )
+    # 16. Quit the program.
+    menu_choices.append("Quit")
     while not quit:
         try:
             selection = show_menu(menu_choices)
@@ -71,11 +107,13 @@ def main() -> None:
             elif selection == 6:
                 RadioFunctions.PlotFiles()
             elif selection == 7:
-                print("Single measurement (Tx ON)")
+                # Single measurement with transmitter on.
+                print("Capture single measurement (Tx ON)")
                 data_val = RadioFunctions.do_single(Tx=True)
                 print("RMS = {:.3e}".format(data_val))
             elif selection == 8:
-                print("Single background (Tx OFF)")
+                # Single background measurement with transmitter off.
+                print("Capture single background measurement (Tx OFF)")
                 data_val = RadioFunctions.do_single(Tx=False)
                 print("RMS = {:.3e}".format(data_val))
             elif selection == 9:

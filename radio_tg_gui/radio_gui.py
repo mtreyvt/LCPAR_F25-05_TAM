@@ -79,22 +79,33 @@ class RadioGUI:
         # Define menu labels and associated handler methods.  This list
         # determines the order of buttons in the grid below.  New options
         # for time‑synchronised single‑frequency scans are appended at the end.
+        # Define menu labels and associated handler methods with clear names.
+        # The legacy time‑gated routines use a Tukey window, while the "Rectangular"
+        # options use the new unsupervised rectangular gate from NewTimeGating.
         menu_items = [
-            ("FastScan (coherent AM, rotating)", self._handle_fastscan),
-            ("Measure (coherent AM, stepwise)", self._handle_measure),
-            ("Measure (Noise Subtraction)", self._handle_ns_measure),
+            # Continuous scan of AM amplitude using FastScan with no time gating
+            ("Continuous AM Scan (FastScan, rotating – no gating)", self._handle_fastscan),
+            # Stepwise coherent AM measurement with no time gating
+            ("Stepwise AM Measurement (no gating)", self._handle_measure),
+            # Noise subtraction measurement (stub)
+            ("Noise Subtraction Measurement (stub)", self._handle_ns_measure),
+            # Plotting helpers
             ("Plot last run data", self._handle_plot_last),
             ("Plot data from file", self._handle_plot_file),
             ("Plot data from two files", self._handle_plot_two_files),
+            # Single measurement options
             ("Capture single measurement (Tx ON)", self._handle_single_tx),
-            ("Capture single background (Tx OFF)", self._handle_single_rx),
-            ("Time‑Gated Measure (coherent AM, stepwise)", self._handle_am_tg_meas),
-            ("Time‑Gated FastScan (rotating, freq sweep)", self._handle_am_tg_scan),
-            ("Time‑Gated single pointing (freq sweep, no rotation)", self._handle_single_tg),
-            ("Time‑Gated single frequency @ 2.5 GHz (rotating)", self._handle_single_freq_tg),
-            ("Time‑sync single freq (no gating)", self._handle_time_sync_no_tg),
-            ("Time‑sync single freq (Tukey gating)", self._handle_time_sync_tg_old),
-            ("Time‑sync single freq (Rect gating)", self._handle_time_sync_tg_new),
+            ("Capture single background measurement (Tx OFF)", self._handle_single_rx),
+            # Legacy time‑gated AM routines using Tukey window (supervised gating)
+            ("Legacy Time‑Gated AM Measurement – Stepwise (Tukey gating – supervised)", self._handle_am_tg_meas),
+            ("Legacy Time‑Gated AM FastScan – Continuous (Tukey gating – supervised)", self._handle_am_tg_scan),
+            ("Legacy Time‑Gated Single‑Point Sweep – (Tukey gating – supervised)", self._handle_single_tg),
+            ("Legacy Time‑Gated Single Frequency @2.5 GHz (Tukey gating – supervised)", self._handle_single_freq_tg),
+            # Time‑synchronised single frequency routines
+            ("Time‑Sync Single Frequency – no gating", self._handle_time_sync_no_tg),
+            ("Time‑Sync Single Frequency – Legacy Tukey gating (supervised)", self._handle_time_sync_tg_old),
+            ("Time‑Sync Single Frequency – Unsupervised Rectangular gating (new)", self._handle_time_sync_tg_new),
+            # Quit
             ("Quit", self._quit_application),
         ]
         # Create buttons in a grid.  Layout in 3 columns to fit nicely.
@@ -219,18 +230,33 @@ class RadioGUI:
 
     def _handle_fastscan(self) -> None:
         params = self._load_params()
-        self._run_task(RadioFunctions.do_AMscan, args=(params,), description="FastScan (AM scan)", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_AMscan,
+            args=(params,),
+            description="Continuous AM Scan (FastScan, rotating – no gating)",
+            callback=self._update_last_data,
+        )
 
     def _handle_measure(self) -> None:
         params = self._load_params()
-        self._run_task(RadioFunctions.do_AMmeas, args=(params,), description="Measure (AM)", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_AMmeas,
+            args=(params,),
+            description="Stepwise AM Measurement (no gating)",
+            callback=self._update_last_data,
+        )
 
     def _handle_ns_measure(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_NSmeas'):
             messagebox.showerror("Not Implemented", "Noise subtraction measurement is not available.")
             return
-        self._run_task(RadioFunctions.do_NSmeas, args=(params,), description="Measure (Noise Subtraction)", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_NSmeas,
+            args=(params,),
+            description="Noise Subtraction Measurement (stub)",
+            callback=self._update_last_data,
+        )
 
     def _handle_plot_last(self) -> None:
         if not self.last_data:
@@ -306,32 +332,55 @@ class RadioGUI:
 
     def _handle_single_tx(self) -> None:
         # Capture a single measurement with transmitter on
-        self._run_task(RadioFunctions.do_single, kwargs={"Tx": True}, description="Single measurement (Tx ON)")
+        self._run_task(
+            RadioFunctions.do_single,
+            kwargs={"Tx": True},
+            description="Capture single measurement (Tx ON)",
+        )
 
     def _handle_single_rx(self) -> None:
         # Capture a single background measurement with transmitter off
-        self._run_task(RadioFunctions.do_single, kwargs={"Tx": False}, description="Single background (Tx OFF)")
+        self._run_task(
+            RadioFunctions.do_single,
+            kwargs={"Tx": False},
+            description="Capture single background measurement (Tx OFF)",
+        )
 
     def _handle_am_tg_meas(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_AMTGmeas'):
             messagebox.showerror("Not Implemented", "Time‑Gated Measure function is not available.")
             return
-        self._run_task(RadioFunctions.do_AMTGmeas, args=(params,), description="Time‑Gated Measure", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_AMTGmeas,
+            args=(params,),
+            description="Legacy Time‑Gated AM Measurement – Stepwise (Tukey gating – supervised)",
+            callback=self._update_last_data,
+        )
 
     def _handle_am_tg_scan(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_AMTGscan'):
             messagebox.showerror("Not Implemented", "Time‑Gated FastScan function is not available.")
             return
-        self._run_task(RadioFunctions.do_AMTGscan, args=(params,), description="Time‑Gated FastScan", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_AMTGscan,
+            args=(params,),
+            description="Legacy Time‑Gated AM FastScan – Continuous (Tukey gating – supervised)",
+            callback=self._update_last_data,
+        )
 
     def _handle_single_tg(self) -> None:
         params = self._load_params()
         if not hasattr(RadioFunctions, 'do_singleTG'):
             messagebox.showerror("Not Implemented", "Single pointing time‑gated function is not available.")
             return
-        self._run_task(RadioFunctions.do_singleTG, args=(params,), description="Single pointing TG", callback=self._update_last_data)
+        self._run_task(
+            RadioFunctions.do_singleTG,
+            args=(params,),
+            description="Legacy Time‑Gated Single‑Point Sweep – (Tukey gating – supervised)",
+            callback=self._update_last_data,
+        )
 
     def _handle_single_freq_tg(self) -> None:
         params = self._load_params()
@@ -343,7 +392,7 @@ class RadioGUI:
             RadioFunctions.do_AMTGscan_single_freq,
             args=(params,),
             kwargs={"freq_hz": 2.5e9, "show_plots": True},
-            description="Single frequency TG scan",
+            description="Legacy Time‑Gated Single Frequency @ 2.5 GHz (Tukey gating – supervised)",
             callback=self._update_last_data,
         )
 
@@ -357,7 +406,7 @@ class RadioGUI:
             RadioFunctions.do_time_sync_no_tg,
             args=(params,),
             kwargs={"freq_hz": 2.5e9, "show_plots": True},
-            description="Time‑sync single freq (no gating)",
+            description="Time‑Sync Single Frequency – no gating",
             callback=self._update_last_data,
         )
 
@@ -370,7 +419,7 @@ class RadioGUI:
             RadioFunctions.do_time_sync_tg_old,
             args=(params,),
             kwargs={"freq_hz": 2.5e9, "show_plots": True},
-            description="Time‑sync single freq (Tukey gating)",
+            description="Time‑Sync Single Frequency – Legacy Tukey gating (supervised)",
             callback=self._update_last_data,
         )
 
@@ -383,7 +432,7 @@ class RadioGUI:
             RadioFunctions.do_time_sync_tg_new,
             args=(params,),
             kwargs={"freq_hz": 2.5e9, "show_plots": True},
-            description="Time‑sync single freq (Rect gating)",
+            description="Time‑Sync Single Frequency – Unsupervised Rectangular gating (new)",
             callback=self._update_last_data,
         )
 

@@ -30,7 +30,62 @@ Key functions include:
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import tukey, savgol_filter
+# Import Savitzky–Golay filter from SciPy.  Some SciPy distributions do
+# not expose the Tukey window function; we therefore import only
+# savgol_filter and implement our own Tukey window below.
+from scipy.signal import savgol_filter
+
+
+# -----------------------------------------------------------------------------
+# Window functions
+# -----------------------------------------------------------------------------
+def tukey(M: int, alpha: float = 0.5) -> np.ndarray:
+    """
+    Construct a Tukey (tapered cosine) window.
+
+    This implementation mirrors ``scipy.signal.windows.tukey`` for cases
+    where SciPy may not provide it.  The Tukey window is essentially a
+    cosine taper at both ends of a rectangular window.  The parameter
+    ``alpha`` specifies the fraction of the window inside the cosine
+    tapered regions.  ``alpha=0`` yields a rectangular window and
+    ``alpha=1`` yields a Hann window.
+
+    Parameters
+    ----------
+    M : int
+        Number of samples in the window.  ``M`` must be positive.
+    alpha : float, optional
+        Fraction of the window length occupied by the taper on each
+        side.  ``alpha`` must satisfy ``0 <= alpha <= 1``.
+
+    Returns
+    -------
+    np.ndarray
+        The Tukey window of length ``M``.
+    """
+    if M <= 0:
+        return np.zeros(0, dtype=float)
+    if alpha <= 0:
+        return np.ones(M, dtype=float)
+    if alpha >= 1:
+        # Hann window when alpha == 1
+        return np.hanning(M)
+    # Create symmetric taper
+    n = np.arange(M, dtype=float)
+    # Half period of cosine portion
+    per = alpha * (M - 1) / 2.0
+    w = np.ones(M, dtype=float)
+    # Rising cosine portion
+    first = int(np.floor(per))
+    if first > 0:
+        t = n[:first]
+        w[:first] = 0.5 * (1 + np.cos(np.pi * ((2.0 * t) / (alpha * (M - 1)) - 1)))
+    # Falling cosine portion
+    last = int(np.floor(per))
+    if last > 0:
+        t = n[-last:]
+        w[-last:] = 0.5 * (1 + np.cos(np.pi * ((2.0 * (t - (M - last))) / (alpha * (M - 1)) - 1)))
+    return w
 
 
 def impulse_response(freq_resp: np.ndarray, N_fft: int) -> np.ndarray:
@@ -230,22 +285,53 @@ def apply_time_gating_matrix(
         1‑D array of length ``N_angles`` containing the gated pattern in
         dB, normalised to a peak of 0 dB.
     """
+    # Convert input to a 2D complex array
     freq_resp = np.asarray(freq_resp, dtype=np.complex128)
     if freq_resp.ndim != 2:
         raise ValueError("freq_resp must be a 2D array [N_angles, N_freqs].")
     N_angles, N_freqs = freq_resp.shape
+
+    # Handle degenerate single‑frequency case by returning the normalised
+    # magnitude pattern without time gating.  Time gating cannot be
+    # performed with only one frequency point.  This prevents
+    # ValueError from _infer_fs_from_freqs when called below.
+    if N_freqs < 2:
+        mags = np.abs(freq_resp[:, 0])
+        denom = np.max(mags) if np.max(mags) > 0 else 1.0
+        mags = mags / denom
+        pat_db = 20.0 * np.log10(np.clip(mags, 1e-12, None))
+        if pat_db.size:
+            pat_db = pat_db - np.max(pat_db)
+        # optional smoothing
+        if denoise_wavelet:
+            pat_db = denoise_pattern(pat_db)
+        return pat_db
+
+    # Choose FFT size if not provided.  At least twice the number of
+    # frequency points is required to avoid circular overlap when
+    # applying the gate.  Round up to the next power of two for
+    # efficiency.
     if N_fft is None:
         N_fft = _next_pow2(max(256, 2 * N_freqs))
+
+    # Infer sampling rate from frequency spacing if not supplied
     if fs is None:
         fs = _infer_fs_from_freqs(np.asarray(freq_list, float), N_fft)
-    # IFFT to time domain
+
+    # IFFT to obtain the impulse response
     h_t = impulse_response(freq_resp, N_fft)
-    # Apply Tukey window
-    h_t_g = apply_time_gate(h_t, fs, gate_ns=(gate_width_s * 1e9), alpha=tukey_alpha)
-    # FFT back to frequency domain
+    # Apply the Tukey window time gate (gate width specified in seconds)
+    h_t_g = apply_time_gate(
+        h_t,
+        fs,
+        gate_ns=(gate_width_s * 1e9),
+        alpha=tukey_alpha,
+    )
+    # FFT back to the frequency domain
     H_g = gated_frequency_response(h_t_g, N_fft)
-    # Extract pattern in dB
+    # Extract per‑angle pattern and normalise to peak 0 dB
     pat_db = extract_pattern(H_g)
+    # Optional Savitzky–Golay smoothing
     if denoise_wavelet:
         pat_db = denoise_pattern(pat_db)
     return pat_db
